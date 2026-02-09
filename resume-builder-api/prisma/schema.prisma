@@ -1,0 +1,53 @@
+// Prisma schema for resume-builder-api
+// Ref: https://www.prisma.io/docs
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  fullName     String
+  passwordHash String
+  refreshTokenHash String?
+  refreshTokenExpiresAt DateTime?
+  aiTokensUsed Int @default(0)
+  aiTokensLimit Int @default(20000)
+  atsScansUsed Int @default(0)
+  atsScansLimit Int @default(10)
+  resumesLimit Int @default(1)
+  pdfExportsUsed Int @default(0)
+  pdfExportsLimit Int @default(5)
+  usagePeriodStart DateTime?
+  usagePeriodEnd DateTime?
+  plan          String @default("FREE")
+  stripeCustomerId String?
+  stripeSubscriptionId String?
+  stripeCurrentPeriodEnd DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  resumes      Resume[]
+}
+
+model Resume {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String
+  contact   Json?
+  skills    String[]
+  summary   String
+  experience Json
+  education  Json
+  projects   Json?
+  certifications Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+}

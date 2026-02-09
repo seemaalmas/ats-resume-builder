@@ -1,0 +1,25 @@
+{
+  "name": "resume-builder-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Next.js (App Router) web client",
+  "scripts": {
+    "lint": "next lint",
+    "build": "next build",
+    "dev": "next dev",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "resume-builder-shared": "../resume-builder-shared",
+    "zustand": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "typescript": "latest"
+  }
+}

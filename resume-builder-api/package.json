@@ -1,0 +1,44 @@
+{
+  "name": "resume-builder-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "NestJS API service",
+  "scripts": {
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "build": "nest build",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:studio": "prisma studio"
+  },
+  "dependencies": {
+    "@nestjs/common": "latest",
+    "@nestjs/config": "latest",
+    "@nestjs/core": "latest",
+    "@nestjs/jwt": "latest",
+    "@nestjs/passport": "latest",
+    "@nestjs/platform-express": "latest",
+    "@prisma/client": "5.22.0",
+    "bcryptjs": "latest",
+    "mammoth": "^1.11.0",
+    "passport": "latest",
+    "passport-jwt": "latest",
+    "pdf-parse": "^2.4.5",
+    "puppeteer": "latest",
+    "reflect-metadata": "latest",
+    "resume-builder-shared": "../resume-builder-shared",
+    "resume-intelligence": "../packages/resume-intelligence",
+    "resume-schemas": "../packages/resume-schemas",
+    "rxjs": "latest",
+    "stripe": "latest"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "latest",
+    "@types/bcryptjs": "latest",
+    "@types/multer": "^2.0.0",
+    "@types/node": "latest",
+    "@types/passport-jwt": "latest",
+    "prisma": "5.22.0",
+    "typescript": "latest"
+  }
+}

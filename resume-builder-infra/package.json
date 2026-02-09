@@ -1,0 +1,15 @@
+﻿{
+    "name":  "resume-builder-infra",
+    "version":  "0.1.0",
+    "private":  true,
+    "description":  "Infrastructure (Docker/CI/IaC)",
+    "scripts":  {
+                    "lint":  "echo \"infra lint\""
+                },
+    "dependencies":  {
+
+                     },
+    "devDependencies":  {
+
+                        }
+}

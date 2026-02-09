@@ -1,0 +1,19 @@
+﻿{
+    "name":  "resume-builder-mobile",
+    "version":  "0.1.0",
+    "private":  true,
+    "description":  "React Native mobile client",
+    "scripts":  {
+                    "ios":  "react-native run-ios",
+                    "android":  "react-native run-android",
+                    "start":  "react-native start"
+                },
+    "dependencies":  {
+                         "react-native":  "latest",
+                         "react":  "latest"
+                     },
+    "devDependencies":  {
+                            "@types/react":  "latest",
+                            "typescript":  "latest"
+                        }
+}
