@@ -19,6 +19,9 @@ export type Resume = {
   contact?: ContactInfo;
   summary: string;
   skills: string[];
+  technicalSkills?: string[];
+  softSkills?: string[];
+  languages?: string[];
   experience: ExperienceItem[];
   education: EducationItem[];
   projects?: ProjectItem[];
@@ -32,6 +35,9 @@ export type ResumeImportResult = {
   contact?: ContactInfo;
   summary: string;
   skills: string[];
+  technicalSkills?: string[];
+  softSkills?: string[];
+  languages?: string[];
   experience: ExperienceItem[];
   education: EducationItem[];
   projects?: ProjectItem[];
@@ -44,6 +50,9 @@ export type ResumeImportResult = {
     contact?: ContactInfo;
     summary: string;
     skills: string[];
+    technicalSkills?: string[];
+    softSkills?: string[];
+    languages?: string[];
     experience: ExperienceItem[];
     education: EducationItem[];
     projects?: ProjectItem[];
@@ -66,7 +75,9 @@ export type EducationItem = {
   degree: string;
   startDate: string;
   endDate: string;
-  details: string[];
+  details?: string[];
+  gpa?: number | null;
+  percentage?: number | null;
 };
 
 export type ProjectItem = {
@@ -74,6 +85,7 @@ export type ProjectItem = {
   role?: string;
   startDate?: string;
   endDate?: string;
+  url?: string;
   highlights: string[];
 };
 
@@ -93,6 +105,21 @@ export type AtsScoreResult = {
   improvementSuggestions: string[];
   details: string[];
   missingKeywords: string[];
+  actionVerbRule?: {
+    requiredRatio: number;
+    percentage: number;
+    strongBullets: number;
+    totalBullets: number;
+    requiredStrongBullets: number;
+    remainingToPass: number;
+    passes: boolean;
+    failedBullets: Array<{
+      index: number;
+      reason: 'weak_starter' | 'not_strong_enough';
+      suggestions: string[];
+    }>;
+    message: string;
+  };
 };
 
 export type DuplicateResumeResult = Resume;

@@ -55,7 +55,7 @@ export class ResumeController {
   create(@Req() req: { user: { userId: string } }, @Body() body: CreateResumeDto) {
     const parsed = CreateResumeSchema.safeParse(body);
     if (!parsed.success) {
-      throw new BadRequestException(parsed.error.flatten());
+      throw new BadRequestException(buildZodErrorPayload(parsed.error));
     }
     return this.resumeService.create(req.user.userId, parsed.data);
   }
@@ -78,7 +78,7 @@ export class ResumeController {
   ) {
     const parsed = UpdateResumeSchema.safeParse(body);
     if (!parsed.success) {
-      throw new BadRequestException(parsed.error.flatten());
+      throw new BadRequestException(buildZodErrorPayload(parsed.error));
     }
     return this.resumeService.update(req.user.userId, id, parsed.data);
   }
@@ -91,7 +91,7 @@ export class ResumeController {
   ) {
     const parsed = DuplicateResumeSchema.safeParse(body);
     if (!parsed.success) {
-      throw new BadRequestException(parsed.error.flatten());
+      throw new BadRequestException(buildZodErrorPayload(parsed.error));
     }
     return this.resumeService.duplicate(req.user.userId, id, parsed.data.title);
   }
@@ -109,7 +109,7 @@ export class ResumeController {
   ) {
     const parsed = AtsScoreRequestSchema.safeParse(body);
     if (!parsed.success) {
-      throw new BadRequestException(parsed.error.flatten());
+      throw new BadRequestException(buildZodErrorPayload(parsed.error));
     }
     return this.resumeService.atsScoreForResume(req.user.userId, id, parsed.data.jdText);
   }
@@ -192,4 +192,21 @@ function logUploadReason(message: string) {
   if (process.env.NODE_ENV !== 'production') {
     console.warn(`[parse-upload] ${message}`);
   }
+}
+
+function buildZodErrorPayload(error: any) {
+  const flattened = (error && typeof error.flatten === 'function')
+    ? (error.flatten() as Record<string, unknown>)
+    : {};
+  const issues = Array.isArray(error?.issues) ? error.issues : [];
+  return {
+    ...flattened,
+    errors: issues.map((issue: { path?: unknown; message?: unknown }) => {
+      const pathParts = Array.isArray(issue.path) ? issue.path.map((part) => String(part)) : [];
+      return {
+        path: pathParts.join('.') || 'body',
+        message: typeof issue.message === 'string' ? issue.message : 'Invalid request payload.',
+      };
+    }),
+  };
 }

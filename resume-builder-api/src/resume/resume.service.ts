@@ -1,40 +1,76 @@
-﻿import { BadRequestException, ForbiddenException, Injectable, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
+﻿import { BadRequestException, ForbiddenException, HttpException, HttpStatus, Injectable, NotFoundException, Optional, UnprocessableEntityException } from '@nestjs/common';
 import puppeteer from 'puppeteer';
 import { PDFParse } from 'pdf-parse';
 import mammoth from 'mammoth';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { CreateResumeDto, UpdateResumeDto } from 'resume-builder-shared';
 import { ResumeSectionsSchema } from 'resume-schemas';
 import { ensureUsagePeriod } from '../billing/usage';
 import { rateLimitOrThrow } from '../limits/rate-limit';
 import { mapParsedResume, parseResumeText } from 'resume-intelligence';
-
-const ACTION_VERBS = new Set([
-  'achieved','built','created','delivered','designed','developed','drove','executed','improved','launched','led','managed','optimized','reduced','shipped','streamlined','implemented','analyzed','automated','collaborated','increased','mentored','owned','resolved','scaled','spearheaded'
+import { sanitizeImportedResume } from './import-sanitizer';
+import { ACTION_VERB_REQUIRED_RATIO, analyzeActionVerbRule } from './action-verb-rule';
+import { SettingsService } from '../settings/settings.service';
+const KNOWN_SPOKEN_LANGUAGES = new Map<string, string>([
+  ['english', 'English'],
+  ['hindi', 'Hindi'],
+  ['urdu', 'Urdu'],
+  ['bengali', 'Bengali'],
+  ['marathi', 'Marathi'],
+  ['tamil', 'Tamil'],
+  ['telugu', 'Telugu'],
+  ['kannada', 'Kannada'],
+  ['malayalam', 'Malayalam'],
+  ['gujarati', 'Gujarati'],
+  ['punjabi', 'Punjabi'],
+  ['odia', 'Odia'],
+  ['assamese', 'Assamese'],
+  ['sanskrit', 'Sanskrit'],
+  ['spanish', 'Spanish'],
+  ['french', 'French'],
+  ['german', 'German'],
+  ['italian', 'Italian'],
+  ['portuguese', 'Portuguese'],
+  ['japanese', 'Japanese'],
+  ['chinese', 'Chinese'],
+  ['mandarin', 'Mandarin'],
+  ['korean', 'Korean'],
+  ['arabic', 'Arabic'],
+  ['russian', 'Russian'],
 ]);
 const MIN_PDF_ATS_SCORE = 70;
+const FREE_PLAN_RESUME_LIMIT = 2;
+const FREE_PLAN_ATS_LIMIT = 2;
+export const RESUME_CREATE_RATE_LIMIT = 10;
+export const RESUME_CREATE_RATE_WINDOW_MS = 60_000;
+export const RESUME_CREATE_RATE_LIMIT_MESSAGE = 'Rate limit exceeded for resume creation.';
+export const RESUME_CREATE_RATE_LIMIT_CODE = 'RESUME_CREATE_RATE_LIMITED';
 
 @Injectable()
 export class ResumeService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly settingsService?: SettingsService,
+  ) {}
 
   async create(userId: string, dto: CreateResumeDto) {
-    rateLimitOrThrow({
-      key: `resume:create:${userId}`,
-      limit: 10,
-      windowMs: 60_000,
-      message: 'Rate limit exceeded for resume creation.',
-    });
+    await this.enforceResumeCreateRateLimit(userId);
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       throw new NotFoundException('User not found');
     }
-    if (user.plan === 'FREE') {
-      throw new ForbiddenException('Free plan does not allow resume creation.');
-    }
     await ensureUsagePeriod(this.prisma, user);
+    const refreshedUser = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!refreshedUser) {
+      throw new NotFoundException('User not found');
+    }
+    const normalizedUser = await ensureFreePlanFloors(this.prisma, refreshedUser);
     const resumeCount = await this.prisma.resume.count({ where: { userId } });
-    if (resumeCount + 1 > user.resumesLimit) {
+    if (resumeCount + 1 > normalizedUser.resumesLimit) {
+      if (normalizedUser.plan === 'FREE') {
+        throw new ForbiddenException('FREE_PLAN_RESUME_LIMIT_EXCEEDED: Free plan allows up to 2 resumes.');
+      }
       throw new ForbiddenException('Resume limit exceeded for your plan.');
     }
     const normalized = validateResumeSectionsOrThrow({
@@ -42,23 +78,32 @@ export class ResumeService {
       contact: dto.contact ?? undefined,
       summary: dto.summary,
       skills: dto.skills ?? [],
+      technicalSkills: dto.technicalSkills ?? [],
+      softSkills: dto.softSkills ?? [],
+      languages: dto.languages ?? [],
       experience: dto.experience ?? [],
       education: dto.education ?? [],
       projects: dto.projects ?? [],
       certifications: dto.certifications ?? [],
     });
+    const categories = resolveSkillCategories({
+      skills: normalized.skills,
+      technicalSkills: normalized.technicalSkills,
+      softSkills: normalized.softSkills,
+    });
     enforceAtsResumeRules({
       summary: normalized.summary,
-      skills: normalized.skills,
+      skills: categories.skills,
       experience: normalized.experience,
       education: normalized.education,
     });
-    return this.prisma.resume.create({
+    const created = await this.prisma.resume.create({
       data: {
         userId,
         title: normalized.title,
-        contact: normalized.contact ?? undefined,
-        skills: normalized.skills,
+        contact: attachSkillCategoriesToContact(normalized.contact, categories),
+        skills: categories.skills,
+        languages: categories.languages,
         summary: normalized.summary,
         experience: normalized.experience,
         education: normalized.education,
@@ -66,16 +111,49 @@ export class ResumeService {
         certifications: normalized.certifications ?? [],
       },
     });
+    return decorateResumeWithSkillCategories(created);
+  }
+
+  private async enforceResumeCreateRateLimit(userId: string) {
+    const isEnabled = this.settingsService
+      ? await this.settingsService.isRateLimitEnabled()
+      : defaultResumeCreateRateLimitEnabled();
+    if (!isEnabled) return;
+    try {
+      rateLimitOrThrow({
+        key: `resume:create:${userId}`,
+        limit: RESUME_CREATE_RATE_LIMIT,
+        windowMs: RESUME_CREATE_RATE_WINDOW_MS,
+        message: RESUME_CREATE_RATE_LIMIT_MESSAGE,
+      });
+    } catch (error: unknown) {
+      if (isHttpExceptionWithStatus(error, HttpStatus.TOO_MANY_REQUESTS)) {
+        throw new HttpException(
+          {
+            code: RESUME_CREATE_RATE_LIMIT_CODE,
+            message: RESUME_CREATE_RATE_LIMIT_MESSAGE,
+          },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+      throw error;
+    }
   }
 
   async list(userId: string) {
-    return this.prisma.resume.findMany({
+    const rows = await this.prisma.resume.findMany({
       where: { userId },
       orderBy: { updatedAt: 'desc' },
     });
+    return rows.map((row) => decorateResumeWithSkillCategories(row));
   }
 
   async get(userId: string, id: string) {
+    const resume = await this.getRaw(userId, id);
+    return decorateResumeWithSkillCategories(resume);
+  }
+
+  private async getRaw(userId: string, id: string) {
     const resume = await this.prisma.resume.findFirst({
       where: { id, userId },
     });
@@ -92,29 +170,39 @@ export class ResumeService {
       windowMs: 60_000,
       message: 'Rate limit exceeded for resume updates.',
     });
-    const current = await this.get(userId, id);
+    const current = await this.getRaw(userId, id);
+    const currentCategories = readSkillCategoriesFromContact(current.contact);
     const normalized = validateResumeSectionsOrThrow({
       title: dto.title ?? current.title,
       contact: dto.contact ?? (current.contact as Record<string, unknown> | undefined),
       summary: dto.summary ?? current.summary,
       skills: dto.skills ?? (Array.isArray(current.skills) ? current.skills : []),
+      technicalSkills: dto.technicalSkills ?? currentCategories.technicalSkills,
+      softSkills: dto.softSkills ?? currentCategories.softSkills,
+      languages: dto.languages ?? (Array.isArray((current as any).languages) ? ((current as any).languages as string[]) : []),
       experience: dto.experience ?? (Array.isArray(current.experience) ? current.experience as any[] : []),
       education: dto.education ?? (Array.isArray(current.education) ? current.education as any[] : []),
       projects: dto.projects ?? (Array.isArray(current.projects) ? current.projects as any[] : []),
       certifications: dto.certifications ?? (Array.isArray(current.certifications) ? current.certifications as any[] : []),
     });
+    const categories = resolveSkillCategories({
+      skills: normalized.skills,
+      technicalSkills: normalized.technicalSkills,
+      softSkills: normalized.softSkills,
+    });
     enforceAtsResumeRules({
       summary: normalized.summary,
-      skills: normalized.skills,
+      skills: categories.skills,
       experience: normalized.experience,
       education: normalized.education,
     });
-    return this.prisma.resume.update({
+    const updated = await this.prisma.resume.update({
       where: { id },
       data: {
         title: normalized.title,
-        contact: normalized.contact ?? undefined,
-        skills: normalized.skills,
+        contact: attachSkillCategoriesToContact(normalized.contact, categories),
+        skills: categories.skills,
+        languages: categories.languages,
         summary: normalized.summary,
         experience: normalized.experience,
         education: normalized.education,
@@ -122,33 +210,61 @@ export class ResumeService {
         certifications: normalized.certifications,
       },
     });
+    return decorateResumeWithSkillCategories(updated);
   }
 
   async duplicate(userId: string, id: string, title?: string) {
-    const resume = await this.get(userId, id);
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    await ensureUsagePeriod(this.prisma, user);
+    const refreshedUser = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!refreshedUser) {
+      throw new NotFoundException('User not found');
+    }
+    const normalizedUser = await ensureFreePlanFloors(this.prisma, refreshedUser);
+    const resumeCount = await this.prisma.resume.count({ where: { userId } });
+    if (resumeCount + 1 > normalizedUser.resumesLimit) {
+      if (normalizedUser.plan === 'FREE') {
+        throw new ForbiddenException('FREE_PLAN_RESUME_LIMIT_EXCEEDED: Free plan allows up to 2 resumes.');
+      }
+      throw new ForbiddenException('Resume limit exceeded for your plan.');
+    }
+    const resume = await this.getRaw(userId, id);
+    const currentCategories = readSkillCategoriesFromContact(resume.contact);
     const nextTitle = title || `${resume.title} Copy`;
     const normalized = validateResumeSectionsOrThrow({
       title: nextTitle,
       contact: (resume.contact as Record<string, unknown> | undefined) ?? undefined,
       summary: resume.summary,
       skills: Array.isArray(resume.skills) ? resume.skills : [],
+      technicalSkills: currentCategories.technicalSkills,
+      softSkills: currentCategories.softSkills,
+      languages: Array.isArray((resume as any).languages) ? ((resume as any).languages as string[]) : [],
       experience: Array.isArray(resume.experience) ? resume.experience as any[] : [],
       education: Array.isArray(resume.education) ? resume.education as any[] : [],
       projects: Array.isArray(resume.projects) ? resume.projects as any[] : [],
       certifications: Array.isArray(resume.certifications) ? resume.certifications as any[] : [],
     });
+    const categories = resolveSkillCategories({
+      skills: normalized.skills,
+      technicalSkills: normalized.technicalSkills,
+      softSkills: normalized.softSkills,
+    });
     enforceAtsResumeRules({
       summary: normalized.summary,
-      skills: normalized.skills,
+      skills: categories.skills,
       experience: normalized.experience,
       education: normalized.education,
     });
-    return this.prisma.resume.create({
+    const duplicated = await this.prisma.resume.create({
       data: {
         userId,
         title: normalized.title,
-        contact: normalized.contact ?? undefined,
-        skills: normalized.skills,
+        contact: attachSkillCategoriesToContact(normalized.contact, categories),
+        skills: categories.skills,
+        languages: categories.languages,
         summary: normalized.summary,
         experience: normalized.experience,
         education: normalized.education,
@@ -156,6 +272,7 @@ export class ResumeService {
         certifications: normalized.certifications ?? [],
       },
     });
+    return decorateResumeWithSkillCategories(duplicated);
   }
 
   async remove(userId: string, id: string) {
@@ -174,15 +291,19 @@ export class ResumeService {
     if (!user) {
       throw new NotFoundException('User not found');
     }
-    if (user.plan === 'FREE') {
-      throw new ForbiddenException('Free plan does not allow ATS scans.');
-    }
     await ensureUsagePeriod(this.prisma, user);
-    const refreshed = await this.prisma.user.findUnique({ where: { id: userId } });
+    const refreshedRaw = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!refreshedRaw) {
+      throw new NotFoundException('User not found');
+    }
+    const refreshed = await ensureFreePlanFloors(this.prisma, refreshedRaw);
     if (!refreshed) {
       throw new NotFoundException('User not found');
     }
     if (refreshed.atsScansUsed + 1 > refreshed.atsScansLimit) {
+      if (refreshed.plan === 'FREE') {
+        throw new ForbiddenException('FREE_PLAN_ATS_LIMIT_EXCEEDED: Free plan allows ATS checks for up to 2 scans.');
+      }
       throw new ForbiddenException('ATS scan limit exceeded.');
     }
     const resume = await this.get(userId, id);
@@ -280,7 +401,7 @@ export class ResumeService {
     const parsed = parseResumeText(normalized);
     try {
       const mapped = mapParsedResume(parsed);
-      const parsedPayload = {
+      const sanitized = sanitizeImportedResume({
         title: options?.title?.trim() || mapped.title,
         contact: mapped.contact,
         summary: mapped.summary,
@@ -289,13 +410,32 @@ export class ResumeService {
         education: mapped.education,
         projects: mapped.projects,
         certifications: mapped.certifications,
-        roleLevel: mapped.roleLevel,
         unmappedText: mapped.unmappedText,
+      }, { mode: 'upload' });
+      const parsedPayload = {
+        title: sanitized.title,
+        contact: sanitized.contact,
+        summary: sanitized.summary,
+        skills: sanitized.skills,
+        experience: sanitized.experience,
+        education: sanitized.education,
+        projects: sanitized.projects,
+        certifications: sanitized.certifications,
+        roleLevel: mapped.roleLevel,
+        signals: mapped.signals,
+        unmappedText: sanitized.unmappedText,
+      };
+      const debugPayload = {
+        experienceSignals: mapped.signals,
+        sectionHits: summarizeSectionHits(parsed.sections),
+        dateMatches: collectDateMatches(normalized),
       };
       return {
         text: normalized,
+        fileName: file.originalname,
         parsed: parsedPayload,
         ...parsedPayload,
+        debug: debugPayload,
         mode: options?.mode || 'extract-and-map',
       };
     } catch (error: unknown) {
@@ -311,6 +451,20 @@ export class ResumeService {
   }
 }
 
+function defaultResumeCreateRateLimitEnabled() {
+  if (String(process.env.FORCE_DISABLE_RATE_LIMIT || '').trim().toLowerCase() === 'true') return false;
+  const fromEnv = String(process.env.RESUME_CREATION_RATE_LIMIT_DEFAULT || '').trim().toLowerCase();
+  if (fromEnv === 'true') return true;
+  if (fromEnv === 'false') return false;
+  if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test') return false;
+  return true;
+}
+
+function isHttpExceptionWithStatus(error: unknown, status: number) {
+  if (!(error instanceof HttpException)) return false;
+  return error.getStatus() === status;
+}
+
 function extractValidationIssues(error: unknown) {
   if (!error || typeof error !== 'object') return [];
   const maybeError = error as { issues?: Array<{ path?: unknown; message?: unknown }> };
@@ -322,11 +476,31 @@ function extractValidationIssues(error: unknown) {
     }));
 }
 
+function summarizeSectionHits(sections: Record<string, string[]>) {
+  const hits: Record<string, number> = {};
+  for (const [key, lines] of Object.entries(sections || {})) {
+    const count = Array.isArray(lines) ? lines.filter((line) => String(line || '').trim().length > 0).length : 0;
+    if (count > 0) hits[key] = count;
+  }
+  return hits;
+}
+
+function collectDateMatches(text: string, limit = 40) {
+  const pattern = /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{4}\s*(?:-|to|–|—)\s*(?:present|current|now|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{4}|\d{4})\b|\b\d{1,2}[/-]\d{4}\s*(?:-|to|–|—)\s*(?:\d{1,2}[/-]\d{4}|present|current|now)\b|\b(?:19|20)\d{2}\s*(?:-|to|–|—)\s*(?:present|current|now|(?:19|20)\d{2})\b/gi;
+  const matches = Array.from(String(text || '').matchAll(pattern))
+    .map((match) => String(match[0] || '').trim())
+    .filter(Boolean);
+  return Array.from(new Set(matches)).slice(0, limit);
+}
+
 function validateResumeSectionsOrThrow(input: {
   title: string;
   contact?: Record<string, unknown>;
   summary: string;
   skills: string[];
+  technicalSkills?: string[];
+  softSkills?: string[];
+  languages?: string[];
   experience: any[];
   education: any[];
   projects?: any[];
@@ -337,15 +511,398 @@ function validateResumeSectionsOrThrow(input: {
     contact: input.contact,
     summary: input.summary,
     skills: input.skills,
+    technicalSkills: input.technicalSkills ?? [],
+    softSkills: input.softSkills ?? [],
+    languages: input.languages ?? [],
     experience: input.experience,
     education: input.education,
     projects: input.projects ?? [],
     certifications: input.certifications ?? [],
   });
   if (!parsed.success) {
-    throw new BadRequestException({ errors: parsed.error.issues.map((issue) => issue.message) });
+    throw new BadRequestException({
+      errors: parsed.error.issues.map((issue) => ({
+        path: issue.path.join('.') || 'resume',
+        message: issue.message,
+      })),
+    });
   }
-  return parsed.data;
+  return normalizeResumeDatesOrThrow(parsed.data);
+}
+
+function normalizeResumeDatesOrThrow(input: any) {
+  const errors: Array<{ path: string; message: string }> = [];
+  const normalizedExperience = (Array.isArray(input.experience) ? input.experience : []).map((item: any, index: number) => {
+    const startDate = normalizePersistDateToken(item.startDate, {
+      allowPresent: false,
+      required: true,
+      path: `experience.${index}.startDate`,
+      errors,
+    });
+    const endDate = normalizePersistDateToken(item.endDate, {
+      allowPresent: true,
+      required: true,
+      path: `experience.${index}.endDate`,
+      errors,
+    });
+    if (isYearMonth(startDate) && isYearMonth(endDate) && compareMonthTokens(endDate, startDate) < 0) {
+      errors.push({
+        path: `experience.${index}.endDate`,
+        message: 'End date must be on or after start date.',
+      });
+    }
+    return { ...item, startDate, endDate };
+  });
+  const normalizedEducation = (Array.isArray(input.education) ? input.education : []).map((item: any, index: number) => {
+    const startDate = normalizePersistDateToken(item.startDate, {
+      allowPresent: false,
+      required: true,
+      path: `education.${index}.startDate`,
+      errors,
+    });
+    const endDate = normalizePersistDateToken(item.endDate, {
+      allowPresent: false,
+      required: true,
+      path: `education.${index}.endDate`,
+      errors,
+    });
+    if (isYearMonth(startDate) && isYearMonth(endDate) && compareMonthTokens(endDate, startDate) < 0) {
+      errors.push({
+        path: `education.${index}.endDate`,
+        message: 'End date must be on or after start date.',
+      });
+    }
+    return { ...item, startDate, endDate };
+  });
+  const normalizedProjects = (Array.isArray(input.projects) ? input.projects : []).map((item: any, index: number) => {
+    const startDate = normalizePersistDateToken(item.startDate, {
+      allowPresent: false,
+      required: false,
+      path: `projects.${index}.startDate`,
+      errors,
+    });
+    const endDate = normalizePersistDateToken(item.endDate, {
+      allowPresent: false,
+      required: false,
+      path: `projects.${index}.endDate`,
+      errors,
+    });
+    if (isYearMonth(startDate) && isYearMonth(endDate) && compareMonthTokens(endDate, startDate) < 0) {
+      errors.push({
+        path: `projects.${index}.endDate`,
+        message: 'End date must be on or after start date.',
+      });
+    }
+    return {
+      ...item,
+      startDate: startDate || undefined,
+      endDate: endDate || undefined,
+    };
+  });
+  const normalizedCertifications = (Array.isArray(input.certifications) ? input.certifications : []).map((item: any, index: number) => {
+    const date = normalizePersistDateToken(item.date, {
+      allowPresent: false,
+      required: false,
+      path: `certifications.${index}.date`,
+      errors,
+    });
+    return {
+      ...item,
+      date: date || undefined,
+    };
+  });
+
+  if (errors.length) {
+    throw new BadRequestException({ errors });
+  }
+
+  return {
+    ...input,
+    experience: normalizedExperience,
+    education: normalizedEducation,
+    projects: normalizedProjects,
+    certifications: normalizedCertifications,
+  };
+}
+
+function normalizePersistDateToken(
+  rawValue: string,
+  options: {
+    allowPresent: boolean;
+    required: boolean;
+    path: string;
+    errors: Array<{ path: string; message: string }>;
+  },
+) {
+  const raw = String(rawValue || '').trim();
+  if (!raw) {
+    if (options.required) {
+      options.errors.push({
+        path: options.path,
+        message: options.allowPresent
+          ? 'Date is required. Use YYYY-MM or Present.'
+          : 'Date is required. Use YYYY-MM.',
+      });
+    }
+    return '';
+  }
+
+  if (options.allowPresent && /^(present|current|now)$/i.test(raw)) {
+    return 'Present';
+  }
+
+  const normalized = toYearMonthToken(raw);
+  if (!normalized) {
+    options.errors.push({
+      path: options.path,
+      message: options.allowPresent
+        ? 'Invalid date. Use YYYY-MM or Present.'
+        : 'Invalid date. Use YYYY-MM.',
+    });
+    return raw;
+  }
+  return normalized;
+}
+
+function toYearMonthToken(value: string) {
+  const clean = String(value || '').trim().toLowerCase();
+  if (!clean) return '';
+
+  const direct = clean.match(/^(19\d{2}|20\d{2})-(0[1-9]|1[0-2])$/);
+  if (direct) return `${direct[1]}-${direct[2]}`;
+
+  const monthMap: Record<string, string> = {
+    jan: '01',
+    feb: '02',
+    mar: '03',
+    apr: '04',
+    may: '05',
+    jun: '06',
+    jul: '07',
+    aug: '08',
+    sep: '09',
+    sept: '09',
+    oct: '10',
+    nov: '11',
+    dec: '12',
+  };
+
+  const monthYear = clean.match(/^(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+(19\d{2}|20\d{2})$/i);
+  if (monthYear) {
+    const month = monthMap[monthYear[1].toLowerCase().slice(0, 4)] || monthMap[monthYear[1].toLowerCase().slice(0, 3)];
+    if (!month) return '';
+    return `${monthYear[2]}-${month}`;
+  }
+
+  const mmYyyy = clean.match(/^(\d{1,2})[/-](19\d{2}|20\d{2})$/);
+  if (mmYyyy) {
+    const monthNumber = Number(mmYyyy[1]);
+    if (Number.isNaN(monthNumber) || monthNumber < 1 || monthNumber > 12) return '';
+    const month = monthNumber;
+    return `${mmYyyy[2]}-${String(month).padStart(2, '0')}`;
+  }
+
+  const yyyyMm = clean.match(/^(19\d{2}|20\d{2})[/-](\d{1,2})$/);
+  if (yyyyMm) {
+    const monthNumber = Number(yyyyMm[2]);
+    if (Number.isNaN(monthNumber) || monthNumber < 1 || monthNumber > 12) return '';
+    const month = monthNumber;
+    return `${yyyyMm[1]}-${String(month).padStart(2, '0')}`;
+  }
+
+  const yyyyOnly = clean.match(/^(19\d{2}|20\d{2})$/);
+  if (yyyyOnly) {
+    return `${yyyyOnly[1]}-01`;
+  }
+
+  return '';
+}
+
+function isYearMonth(value: string) {
+  return /^(19\d{2}|20\d{2})-(0[1-9]|1[0-2])$/.test(String(value || ''));
+}
+
+function compareMonthTokens(a: string, b: string) {
+  if (!isYearMonth(a) || !isYearMonth(b)) return 0;
+  const [aYear, aMonth] = a.split('-').map((item) => Number(item));
+  const [bYear, bMonth] = b.split('-').map((item) => Number(item));
+  const aIndex = aYear * 12 + (aMonth - 1);
+  const bIndex = bYear * 12 + (bMonth - 1);
+  if (aIndex === bIndex) return 0;
+  return aIndex > bIndex ? 1 : -1;
+}
+
+function resolveSkillCategories(input: {
+  skills?: string[];
+  technicalSkills?: string[];
+  softSkills?: string[];
+  languages?: string[];
+}) {
+  const technicalSkills = dedupeSkills(input.technicalSkills || []);
+  const softSkills = dedupeSkills(input.softSkills || []);
+  const legacySkills = dedupeSkills(input.skills || []);
+  const explicitLanguages = dedupeLanguages(input.languages || []);
+
+  const technicalBase = technicalSkills.length ? technicalSkills : legacySkills;
+  const extractedFromTechnical = technicalBase.filter((skill) => isSpokenLanguageSkill(skill)).map((skill) => normalizeLanguageTag(skill));
+  const extractedFromLegacy = legacySkills.filter((skill) => isSpokenLanguageSkill(skill)).map((skill) => normalizeLanguageTag(skill));
+  const languages = dedupeLanguages([...explicitLanguages, ...extractedFromTechnical, ...extractedFromLegacy]);
+
+  const technical = technicalBase.filter((skill) => !isSpokenLanguageSkill(skill));
+  const soft = softSkills;
+  const legacyWithoutLanguages = legacySkills.filter((skill) => !isSpokenLanguageSkill(skill));
+  const merged = dedupeSkills([...technical, ...soft, ...legacyWithoutLanguages]);
+
+  return {
+    skills: merged,
+    technicalSkills: technical,
+    softSkills: soft,
+    languages,
+  };
+}
+
+function dedupeSkills(values: string[]) {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const value of values || []) {
+    const clean = String(value || '').trim();
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(clean);
+  }
+  return output;
+}
+
+function dedupeLanguages(values: string[]) {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const value of values || []) {
+    const normalized = normalizeLanguageTag(value);
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(normalized);
+  }
+  return output;
+}
+
+function normalizeLanguageTag(value: string) {
+  const clean = String(value || '').trim();
+  if (!clean) return '';
+  const normalized = clean.toLowerCase().replace(/[^a-z\s-]/g, ' ').replace(/\s+/g, ' ').trim();
+  for (const [token, canonical] of KNOWN_SPOKEN_LANGUAGES.entries()) {
+    const regex = new RegExp(`^${token}(?:\\b|\\s|-)`, 'i');
+    if (regex.test(normalized)) {
+      return canonical;
+    }
+  }
+  return clean;
+}
+
+function isSpokenLanguageSkill(value: string) {
+  const normalized = normalizeLanguageTag(value);
+  if (!normalized) return false;
+  return KNOWN_SPOKEN_LANGUAGES.has(normalized.toLowerCase());
+}
+
+async function ensureFreePlanFloors(
+  prisma: PrismaService,
+  user: {
+    id: string;
+    plan: string;
+    resumesLimit: number;
+    atsScansLimit: number;
+    atsScansUsed: number;
+    [key: string]: unknown;
+  },
+) {
+  if (user.plan !== 'FREE') {
+    return user;
+  }
+  const nextResumesLimit = Math.max(Number(user.resumesLimit || 0), FREE_PLAN_RESUME_LIMIT);
+  const nextAtsLimit = Math.max(Number(user.atsScansLimit || 0), FREE_PLAN_ATS_LIMIT);
+  if (nextResumesLimit === user.resumesLimit && nextAtsLimit === user.atsScansLimit) {
+    return user;
+  }
+  return prisma.user.update({
+    where: { id: user.id },
+    data: {
+      resumesLimit: nextResumesLimit,
+      atsScansLimit: nextAtsLimit,
+    },
+  });
+}
+
+function attachSkillCategoriesToContact(
+  contact: Record<string, unknown> | undefined,
+  categories: { technicalSkills: string[]; softSkills: string[] },
+) {
+  if (!contact) return undefined;
+  const next: Record<string, unknown> = { ...contact };
+  next.skillCategories = {
+    technicalSkills: categories.technicalSkills,
+    softSkills: categories.softSkills,
+  };
+  return next as Prisma.InputJsonValue;
+}
+
+function readSkillCategoriesFromContact(contact: unknown) {
+  if (!contact || typeof contact !== 'object' || Array.isArray(contact)) {
+    return { technicalSkills: [] as string[], softSkills: [] as string[] };
+  }
+  const maybeCategories = (contact as Record<string, unknown>).skillCategories;
+  if (!maybeCategories || typeof maybeCategories !== 'object' || Array.isArray(maybeCategories)) {
+    return { technicalSkills: [] as string[], softSkills: [] as string[] };
+  }
+  const technicalSkills = Array.isArray((maybeCategories as Record<string, unknown>).technicalSkills)
+    ? dedupeSkills((maybeCategories as Record<string, unknown>).technicalSkills as string[])
+    : [];
+  const softSkills = Array.isArray((maybeCategories as Record<string, unknown>).softSkills)
+    ? dedupeSkills((maybeCategories as Record<string, unknown>).softSkills as string[])
+    : [];
+  return { technicalSkills, softSkills };
+}
+
+function cleanContactForResponse(contact: unknown) {
+  if (!contact || typeof contact !== 'object' || Array.isArray(contact)) return undefined;
+  const obj = contact as Record<string, unknown>;
+  const fullName = typeof obj.fullName === 'string' ? obj.fullName : '';
+  const email = typeof obj.email === 'string' ? obj.email : undefined;
+  const phone = typeof obj.phone === 'string' ? obj.phone : undefined;
+  const location = typeof obj.location === 'string' ? obj.location : undefined;
+  const links = Array.isArray(obj.links)
+    ? obj.links.map((item) => String(item || '').trim()).filter(Boolean)
+    : undefined;
+  if (!fullName && !email && !phone && !location && !links?.length) return undefined;
+  return {
+    fullName,
+    email,
+    phone,
+    location,
+    links: links?.length ? links : undefined,
+  };
+}
+
+function decorateResumeWithSkillCategories(resume: any) {
+  const categories = readSkillCategoriesFromContact(resume?.contact);
+  const fallbackSkills = Array.isArray(resume?.skills) ? dedupeSkills(resume.skills) : [];
+  const normalized = resolveSkillCategories({
+    skills: fallbackSkills,
+    technicalSkills: categories.technicalSkills.length ? categories.technicalSkills : fallbackSkills,
+    softSkills: categories.softSkills,
+    languages: Array.isArray(resume?.languages) ? (resume.languages as string[]) : [],
+  });
+  return {
+    ...resume,
+    contact: cleanContactForResponse(resume?.contact),
+    skills: normalized.skills,
+    technicalSkills: normalized.technicalSkills,
+    softSkills: normalized.softSkills,
+    languages: normalized.languages,
+  };
 }
 
 function enforceAtsResumeRules(input: {
@@ -355,6 +912,8 @@ function enforceAtsResumeRules(input: {
   education: Array<{ details?: string[] }>;
 }) {
   const errors: string[] = [];
+  const fields: Array<{ path: string; message: string; suggestions?: string[] }> = [];
+  let primaryCode = 'RESUME_VALIDATION_ERROR';
   if (!input.summary || input.summary.trim().length < 20) {
     errors.push('Summary is required and must be at least 20 characters.');
   }
@@ -368,8 +927,15 @@ function enforceAtsResumeRules(input: {
     errors.push('Education section is required.');
   }
 
-  const experienceBullets = input.experience.flatMap((e) => Array.isArray(e.highlights) ? e.highlights : []);
-  const normalized = experienceBullets.map((b) => String(b || '').trim()).filter(Boolean);
+  const indexedBullets = input.experience.flatMap((e, expIndex) => {
+    const lines = Array.isArray(e.highlights) ? e.highlights : [];
+    return lines.map((line, highlightIndex) => ({
+      expIndex,
+      highlightIndex,
+      text: String(line || '').trim(),
+    }));
+  }).filter((entry) => entry.text.length > 0);
+  const normalized = indexedBullets.map((entry) => entry.text);
   if (normalized.length === 0) {
     errors.push('Experience must include at least one bullet highlight.');
   }
@@ -377,11 +943,21 @@ function enforceAtsResumeRules(input: {
   if (tooLong.length > 0) {
     errors.push('Experience bullets must be 28 words or fewer.');
   }
-  const actionVerbRatio = normalized.length
-    ? normalized.filter((b) => ACTION_VERBS.has(firstWord(b))).length / normalized.length
-    : 0;
-  if (actionVerbRatio < 0.6) {
-    errors.push('At least 60% of experience bullets must start with a strong action verb.');
+  const actionVerbRule = analyzeActionVerbRule(normalized, ACTION_VERB_REQUIRED_RATIO);
+  if (!actionVerbRule.passes) {
+    primaryCode = 'ATS_ACTION_VERB_RATIO';
+    errors.push(actionVerbRule.message);
+    for (const failing of actionVerbRule.failingBullets) {
+      const entry = indexedBullets[failing.index];
+      if (!entry) continue;
+      fields.push({
+        path: `experience[${entry.expIndex}].highlights[${entry.highlightIndex}]`,
+        message: failing.reason === 'weak_starter'
+          ? 'Replace weak starters (e.g., "Responsible for") with a strong action verb.'
+          : 'Start this bullet with a strong action verb.',
+        suggestions: failing.suggestions,
+      });
+    }
   }
   const hasMeasurable = normalized.some((b) => /\d/.test(b));
   if (!hasMeasurable) {
@@ -389,7 +965,12 @@ function enforceAtsResumeRules(input: {
   }
 
   if (errors.length) {
-    throw new BadRequestException({ errors });
+    throw new UnprocessableEntityException({
+      code: primaryCode,
+      message: errors[0],
+      errors,
+      fields,
+    });
   }
 }
 
@@ -1213,7 +1794,9 @@ function computeAtsScore(input: {
   if (!input.sections.skills) rejectionReasons.push('Missing Skills section (minimum 3 skills).');
   if (!input.sections.education) rejectionReasons.push('Missing Education section.');
   if (bulletQuality.tooLongCount > 0) rejectionReasons.push('Bullets exceed recommended length.');
-  if (actionVerbScore < 0.4) rejectionReasons.push('Too few bullets start with strong action verbs.');
+  if (actionVerbScore < ACTION_VERB_REQUIRED_RATIO) {
+    rejectionReasons.push(bulletQuality.actionVerbRule.message);
+  }
 
   const improvementSuggestions = buildSuggestions({
     missingKeywords,
@@ -1228,10 +1811,34 @@ function computeAtsScore(input: {
     `Skill coverage: ${(skillCoverageScore * 100).toFixed(0)}%.`,
     `Section weighting: ${(sectionCompleteness * 100).toFixed(0)}%.`,
     `Bullet quality: ${Math.round(((actionVerbScore + bulletDensityScore) / 2) * 100)}%.`,
+    `Action verbs: ${bulletQuality.actionVerbRule.percentage}% (${bulletQuality.actionVerbRule.strongBullets}/${bulletQuality.actionVerbRule.totalBullets}).`,
     `Semantic similarity: ${(semanticSimilarity * 100).toFixed(0)}%.`,
   ];
 
-  return { atsScore, roleLevel, roleAdjustedScore: Math.round(roleAdjustedScore * 100), rejectionReasons, improvementSuggestions, details, missingKeywords };
+  return {
+    atsScore,
+    roleLevel,
+    roleAdjustedScore: Math.round(roleAdjustedScore * 100),
+    rejectionReasons,
+    improvementSuggestions,
+    details,
+    missingKeywords,
+    actionVerbRule: {
+      requiredRatio: bulletQuality.actionVerbRule.requiredRatio,
+      percentage: bulletQuality.actionVerbRule.percentage,
+      strongBullets: bulletQuality.actionVerbRule.strongBullets,
+      totalBullets: bulletQuality.actionVerbRule.totalBullets,
+      requiredStrongBullets: bulletQuality.actionVerbRule.requiredStrongBullets,
+      remainingToPass: bulletQuality.actionVerbRule.remainingToPass,
+      passes: bulletQuality.actionVerbRule.passes,
+      failedBullets: bulletQuality.actionVerbRule.failingBullets.map((item) => ({
+        index: item.index,
+        reason: item.reason,
+        suggestions: item.suggestions,
+      })),
+      message: bulletQuality.actionVerbRule.message,
+    },
+  };
 }
 
 function detectRoleLevel(input: { resumeText: string; jdText: string; experienceCount: number }) {
@@ -1263,22 +1870,24 @@ function estimateYearsFromText(text: string) {
 
 function scoreBullets(bullets: string[]) {
   if (!bullets.length) {
-    return { actionVerbRatio: 0, densityScore: 0, tooLongCount: 0 };
+    return {
+      actionVerbRatio: 0,
+      densityScore: 0,
+      tooLongCount: 0,
+      actionVerbRule: analyzeActionVerbRule([], ACTION_VERB_REQUIRED_RATIO),
+    };
   }
   const normalized = bullets.map((b) => b.trim()).filter(Boolean);
-  const actionVerbCount = normalized.filter((b) => ACTION_VERBS.has(firstWord(b))).length;
+  const actionVerbRule = analyzeActionVerbRule(normalized, ACTION_VERB_REQUIRED_RATIO);
   const tooLongCount = normalized.filter((b) => wordCount(b) > 28).length;
   const avgWords = normalized.reduce((acc, b) => acc + wordCount(b), 0) / normalized.length;
   const densityScore = avgWords >= 8 && avgWords <= 22 ? 1 : avgWords < 8 ? 0.5 : 0.3;
   return {
-    actionVerbRatio: actionVerbCount / normalized.length,
+    actionVerbRatio: actionVerbRule.totalBullets ? actionVerbRule.strongBullets / actionVerbRule.totalBullets : 0,
     densityScore,
     tooLongCount,
+    actionVerbRule,
   };
-}
-
-function firstWord(text: string) {
-  return text.toLowerCase().split(/\s+/)[0] || '';
 }
 
 function wordCount(text: string) {
@@ -1361,7 +1970,7 @@ function buildSuggestions(input: {
   missingKeywords: string[];
   sections: { summary: boolean; experience: boolean; education: boolean; skills: boolean };
   jdProvided: boolean;
-  bulletQuality: { actionVerbRatio: number; densityScore: number; tooLongCount: number };
+  bulletQuality: { actionVerbRatio: number; densityScore: number; tooLongCount: number; actionVerbRule?: { message?: string } };
 }): string[] {
   const suggestions: string[] = [];
   if (input.missingKeywords.length) {
@@ -1382,8 +1991,8 @@ function buildSuggestions(input: {
   if (input.bulletQuality.tooLongCount > 0) {
     suggestions.push('Shorten long bullets to 8-22 words each.');
   }
-  if (input.bulletQuality.actionVerbRatio < 0.6) {
-    suggestions.push('Start most bullets with action verbs (e.g., Built, Led, Improved).');
+  if (input.bulletQuality.actionVerbRatio < ACTION_VERB_REQUIRED_RATIO) {
+    suggestions.push(input.bulletQuality.actionVerbRule?.message || 'Start most bullets with action verbs.');
   }
   if (!input.jdProvided) {
     suggestions.push('Upload a job description for better keyword matching.');

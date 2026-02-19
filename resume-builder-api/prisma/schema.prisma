@@ -41,6 +41,7 @@ model Resume {
   title     String
   contact   Json?
   skills    String[]
+  languages String[] @default([])
   summary   String
   experience Json
   education  Json
@@ -50,4 +51,10 @@ model Resume {
   updatedAt DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id])
+}
+
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
 }

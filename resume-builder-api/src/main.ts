@@ -37,7 +37,11 @@ async function bootstrap() {
   await app.listen(port);
 }
 
-bootstrap();
+bootstrap().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : 'Bootstrap failed';
+  console.error(`[bootstrap] ${message}`);
+  process.exit(1);
+});
 
 function parseAllowedOrigins(value?: string) {
   const fromEnv = (value || '')

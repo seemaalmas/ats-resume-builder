@@ -23,7 +23,12 @@ export const EducationItemSchema = z.object({
   degree: z.string().min(1),
   startDate: z.string().optional().default(''),
   endDate: z.string().optional().default(''),
-  details: z.array(z.string().min(1)).default([]),
+  details: z.array(z.string().min(1)).optional().default([]),
+  gpa: z.number().min(0).max(10).nullable().optional(),
+  percentage: z.number().min(0).max(100).nullable().optional(),
+}).refine((value) => !(value.gpa != null && value.percentage != null), {
+  message: 'Provide either GPA or percentage, not both.',
+  path: ['gpa'],
 });
 
 export const ProjectItemSchema = z.object({
@@ -31,6 +36,7 @@ export const ProjectItemSchema = z.object({
   role: z.string().optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),
+  url: z.string().url().refine((value) => /^https:\/\//i.test(value), { message: 'Project URL must start with https://' }).optional(),
   highlights: z.array(z.string().min(1)).default([]),
 });
 
@@ -64,6 +70,8 @@ export const ParsedEducationItemSchema = z.object({
   startDate: z.string().optional().default(''),
   endDate: z.string().optional().default(''),
   details: z.array(z.string()).default([]),
+  gpa: z.number().nullable().optional(),
+  percentage: z.number().nullable().optional(),
 });
 
 export const ParsedProjectItemSchema = z.object({
@@ -71,6 +79,7 @@ export const ParsedProjectItemSchema = z.object({
   role: z.string().optional().default(''),
   startDate: z.string().optional().default(''),
   endDate: z.string().optional().default(''),
+  url: z.string().optional().default(''),
   highlights: z.array(z.string()).default([]),
 });
 
@@ -86,6 +95,9 @@ export const ResumeSectionsSchema = z.object({
   contact: ContactSchema.optional(),
   summary: z.string().min(1),
   skills: z.array(z.string().min(1)).default([]),
+  technicalSkills: z.array(z.string().min(1)).default([]),
+  softSkills: z.array(z.string().min(1)).default([]),
+  languages: z.array(z.string().min(1)).default([]),
   experience: z.array(ExperienceItemSchema).default([]),
   education: z.array(EducationItemSchema).default([]),
   projects: z.array(ProjectItemSchema).default([]),
@@ -99,6 +111,9 @@ export const ParsedResumeSchema = z.object({
   contact: ParsedContactSchema.optional(),
   summary: z.string().optional().default(''),
   skills: z.array(z.string()).default([]),
+  technicalSkills: z.array(z.string()).default([]),
+  softSkills: z.array(z.string()).default([]),
+  languages: z.array(z.string()).default([]),
   experience: z.array(ParsedExperienceItemSchema).default([]),
   education: z.array(ParsedEducationItemSchema).default([]),
   projects: z.array(ParsedProjectItemSchema).default([]),

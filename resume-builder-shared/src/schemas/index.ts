@@ -11,31 +11,37 @@ const ContactSchema = z.object({
 const ExperienceSchema = z.object({
   company: z.string().min(2),
   role: z.string().min(2),
-  startDate: z.string().min(4),
-  endDate: z.string().min(4),
+  startDate: z.string().min(1),
+  endDate: z.string().min(1),
   highlights: z.array(z.string()).min(1),
 });
 
 const EducationSchema = z.object({
   institution: z.string().min(2),
   degree: z.string().min(2),
-  startDate: z.string().min(4),
-  endDate: z.string().min(4),
-  details: z.array(z.string()).min(1),
+  startDate: z.string().min(1),
+  endDate: z.string().min(1),
+  details: z.array(z.string()).optional(),
+  gpa: z.number().min(0).max(10).nullable().optional(),
+  percentage: z.number().min(0).max(100).nullable().optional(),
+}).refine((value) => !(value.gpa != null && value.percentage != null), {
+  message: 'Provide either GPA or percentage, not both.',
+  path: ['gpa'],
 });
 
 const ProjectSchema = z.object({
   name: z.string().min(2),
   role: z.string().min(2).optional(),
-  startDate: z.string().min(4).optional(),
-  endDate: z.string().min(4).optional(),
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
+  url: z.string().url().refine((value) => /^https:\/\//i.test(value), { message: 'Project URL must start with https://' }).optional(),
   highlights: z.array(z.string()).min(1),
 });
 
 const CertificationSchema = z.object({
   name: z.string().min(2),
   issuer: z.string().min(2).optional(),
-  date: z.string().min(4).optional(),
+  date: z.string().optional(),
   details: z.array(z.string()).optional(),
 });
 
@@ -55,6 +61,9 @@ export const CreateResumeSchema = z.object({
   contact: ContactSchema.optional(),
   summary: z.string().min(20),
   skills: z.array(z.string()).optional(),
+  technicalSkills: z.array(z.string()).optional(),
+  softSkills: z.array(z.string()).optional(),
+  languages: z.array(z.string()).optional(),
   experience: z.array(ExperienceSchema).optional(),
   education: z.array(EducationSchema).optional(),
   projects: z.array(ProjectSchema).optional(),
@@ -66,6 +75,9 @@ export const UpdateResumeSchema = z.object({
   contact: ContactSchema.optional(),
   summary: z.string().min(20).optional(),
   skills: z.array(z.string()).optional(),
+  technicalSkills: z.array(z.string()).optional(),
+  softSkills: z.array(z.string()).optional(),
+  languages: z.array(z.string()).optional(),
   experience: z.array(ExperienceSchema).optional(),
   education: z.array(EducationSchema).optional(),
   projects: z.array(ProjectSchema).optional(),

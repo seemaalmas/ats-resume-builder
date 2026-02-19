@@ -17,6 +17,10 @@ Senior Engineer - Acme Corp | Jan 2022 - Present
 - Mentored 5 engineers
 Engineer - Beta Labs | 2019 - 2021
 - Built integrations used by 100+ enterprise customers
+Platform Lead @ Gamma Systems | 2017 - 2019
+- Managed platform modernization across 3 teams
+Freelance | 2016 - 2017
+- —
 
 Academic Background
 BS Computer Science - State University | 2015 - 2019
@@ -31,7 +35,13 @@ const level = computeExperienceLevel({
 
 assert.ok(mapped.summary.toLowerCase().includes('senior software engineer'));
 assert.ok(mapped.skills.includes('TypeScript'));
-assert.ok(mapped.experience.length >= 2);
+assert.ok(mapped.experience.length >= 3);
+assert.ok(mapped.experience.some((item) => item.company.toLowerCase().includes('acme')));
+assert.ok(mapped.experience.some((item) => item.company.toLowerCase().includes('beta')));
+assert.ok(mapped.experience.some((item) => item.company.toLowerCase().includes('gamma')));
+assert.ok(mapped.experience.every((item) => item.company.length >= 2));
+assert.ok(mapped.experience.every((item) => item.role.length >= 2 || /freelance/i.test(item.company)));
+assert.ok(mapped.experience.every((item) => item.startDate.length >= 4 || item.endDate.length >= 4 || item.highlights.length >= 1));
 assert.equal(level.level, 'SENIOR');
 
 console.log('resume-intelligence smoke test passed');

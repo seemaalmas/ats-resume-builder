@@ -3,6 +3,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { ResumeService } from '../../resume/resume.service';
 import { computeExperienceLevel } from 'resume-intelligence';
 import { ResumeSectionsSchema } from 'resume-schemas';
+import { sanitizeImportedResume } from '../../resume/import-sanitizer';
 
 type UploadedResumeFile = {
   originalname: string;
@@ -21,7 +22,7 @@ export class IntelligenceService {
     const current = await this.resumeService.get(userId, resumeId);
     const mapped = await this.resumeService.parseResumeUpload(file);
     const merged = mergeResumeData(current, mapped);
-    const parsed = ResumeSectionsSchema.safeParse({
+    const sanitized = sanitizeImportedResume({
       title: merged.title,
       contact: merged.contact,
       summary: merged.summary,
@@ -31,11 +32,27 @@ export class IntelligenceService {
       projects: merged.projects || [],
       certifications: merged.certifications || [],
       unmappedText: mapped.unmappedText,
+    }, { mode: 'persist' });
+    const parsed = ResumeSectionsSchema.safeParse({
+      title: sanitized.title,
+      contact: sanitized.contact,
+      summary: sanitized.summary,
+      skills: sanitized.skills,
+      experience: sanitized.experience,
+      education: sanitized.education,
+      projects: sanitized.projects,
+      certifications: sanitized.certifications,
+      unmappedText: sanitized.unmappedText,
       roleLevel: mapped.roleLevel,
     });
 
     if (!parsed.success) {
-      throw new BadRequestException({ errors: parsed.error.issues.map((issue) => issue.message) });
+      throw new BadRequestException({
+        errors: parsed.error.issues.map((issue) => ({
+          path: issue.path.join('.') || 'resume',
+          message: issue.message,
+        })),
+      });
     }
 
     const level = computeExperienceLevel({
@@ -60,7 +77,15 @@ export class IntelligenceService {
     return {
       resume: updated,
       mapped: {
-        ...mapped,
+        title: sanitized.title,
+        contact: sanitized.contact,
+        summary: sanitized.summary,
+        skills: sanitized.skills,
+        experience: sanitized.experience,
+        education: sanitized.education,
+        projects: sanitized.projects,
+        certifications: sanitized.certifications,
+        unmappedText: sanitized.unmappedText,
         roleLevel: level.level,
       },
       signals: level.signals,
@@ -80,7 +105,12 @@ export class IntelligenceService {
       certifications: Array.isArray(resume.certifications) ? resume.certifications : [],
     });
     if (!parsed.success) {
-      throw new BadRequestException({ errors: parsed.error.issues.map((issue) => issue.message) });
+      throw new BadRequestException({
+        errors: parsed.error.issues.map((issue) => ({
+          path: issue.path.join('.') || 'resume',
+          message: issue.message,
+        })),
+      });
     }
     const level = computeExperienceLevel({
       resumeText: buildResumeText(parsed.data),

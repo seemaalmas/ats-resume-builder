@@ -8,11 +8,18 @@ Next.js (App Router) web client for the Resume Builder SaaS.
 
 ## Environment
 - `NEXT_PUBLIC_API_URL` (default: http://localhost:3000)
+- `NEXT_PUBLIC_ADMIN_EMAILS` (comma-separated admin emails for UI visibility)
+- `NEXT_PUBLIC_ADMIN_USER_IDS` (comma-separated admin user ids for UI visibility)
 
 ## Commands
 - `npm run dev`
 - `npm run build`
 - `npm run start`
+- `npm test`
+
+## Test Notes
+- Frontend tests run with the Node test runner:
+  - `npm test`
 
 ## Routes
 - `/auth/login`
@@ -20,6 +27,7 @@ Next.js (App Router) web client for the Resume Builder SaaS.
 - `/dashboard`
 - `/resume`
 - `/billing`
+- `/admin/settings` (admin-only UI visibility + backend-enforced access)
 
 ## Dev Lock Recovery
 If Next.js fails with `Unable to acquire lock at .next/dev/lock`:

@@ -20,6 +20,9 @@ export type CreateResumeDto = {
   };
   summary: string;
   skills?: string[];
+  technicalSkills?: string[];
+  softSkills?: string[];
+  languages?: string[];
   experience?: {
     company: string;
     role: string;
@@ -32,13 +35,16 @@ export type CreateResumeDto = {
     degree: string;
     startDate: string;
     endDate: string;
-    details: string[];
+    details?: string[];
+    gpa?: number | null;
+    percentage?: number | null;
   }[];
   projects?: {
     name: string;
     role?: string;
     startDate?: string;
     endDate?: string;
+    url?: string;
     highlights: string[];
   }[];
   certifications?: {
@@ -60,6 +66,9 @@ export type UpdateResumeDto = {
   };
   summary?: string;
   skills?: string[];
+  technicalSkills?: string[];
+  softSkills?: string[];
+  languages?: string[];
   experience?: {
     company: string;
     role: string;
@@ -72,13 +81,16 @@ export type UpdateResumeDto = {
     degree: string;
     startDate: string;
     endDate: string;
-    details: string[];
+    details?: string[];
+    gpa?: number | null;
+    percentage?: number | null;
   }[];
   projects?: {
     name: string;
     role?: string;
     startDate?: string;
     endDate?: string;
+    url?: string;
     highlights: string[];
   }[];
   certifications?: {

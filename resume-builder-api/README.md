@@ -12,8 +12,8 @@ NestJS API for the Resume Builder SaaS.
 ```bash
 npm install
 cp .env.example .env
-npm run prisma:generate
-npm run prisma:migrate
+npx prisma generate
+npx prisma migrate dev
 npm run start:dev
 ```
 
@@ -25,7 +25,7 @@ http://localhost:3000
 ## Production
 ```bash
 npm ci
-npm run prisma:generate
+npx prisma generate
 npx prisma migrate deploy
 npm run build
 node dist/main.js
@@ -47,15 +47,27 @@ node dist/main.js
 - `STRIPE_PRICE_PRO`
 - `STRIPE_SUCCESS_URL`
 - `STRIPE_CANCEL_URL`
+- `ADMIN_EMAILS` (comma-separated)
+- `ADMIN_USER_IDS` (comma-separated)
+- `RESUME_CREATION_RATE_LIMIT_DEFAULT` (default fallback if DB setting is missing)
+- `FORCE_DISABLE_RATE_LIMIT` (`true` hard-disables resume create rate limiting)
 
 ## Commands
 - `npm run start:dev`
 - `npm run build`
+- `npm test`
 - `npm run prisma:generate`
 - `npm run prisma:migrate`
 
+## Database URL Format
+- Use `postgresql://` or `postgres://` for `DATABASE_URL`.
+- Do not use `prisma://` unless Prisma Accelerate/Data Proxy is intentionally configured.
+- Local example:
+  - `DATABASE_URL=postgresql://postgres:postgres@localhost:5432/resume_builder?schema=public`
+
 ## Endpoints
 - `GET /health`
+- `GET /health/db`
 - `POST /auth/register`
 - `POST /auth/login`
 - `POST /auth/refresh`
@@ -66,6 +78,10 @@ node dist/main.js
 - `POST /billing/checkout` (JWT)
 - `POST /billing/portal` (JWT)
 - `POST /billing/webhook` (Stripe)
+- `GET /companies/suggest`
+- `GET /meta/suggest/institutions?q=<query>&limit=10`
+- `GET /meta/suggest/skills?q=<query>&type=technical|soft&limit=10`
+- `GET /meta/suggest/certifications?q=<query>&limit=10`
 - `GET /resumes` (JWT)
 - `POST /resumes` (JWT)
 - `GET /resumes/:id` (JWT)
@@ -73,3 +89,21 @@ node dist/main.js
 - `DELETE /resumes/:id` (JWT)
 - `POST /resumes/:id/ats-score` (JWT)
 - `GET /resumes/:id/pdf` (JWT)
+- `GET /admin/settings` (JWT + Admin)
+- `PUT /admin/settings/rate-limit` (JWT + Admin)
+
+## Test Notes
+- Backend tests are deterministic and run via:
+  - `npm test`
+
+## Free Plan Quotas
+- Free plan supports up to `2` resumes.
+- Free plan supports up to `2` ATS scans.
+
+## Rollout Plan: Resume Creation Rate Limit
+1. Keep rate limiting disabled in pre-launch/testing:
+   - set `FORCE_DISABLE_RATE_LIMIT=true` or keep `RESUME_CREATION_RATE_LIMIT_DEFAULT=false`.
+2. Enable later from admin UI/API:
+   - `PUT /admin/settings/rate-limit` with `{ "enabled": true }`.
+3. Emergency kill switch in production:
+   - set `FORCE_DISABLE_RATE_LIMIT=true` and restart API.

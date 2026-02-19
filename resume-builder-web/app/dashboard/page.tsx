@@ -9,29 +9,21 @@ const templates = [
     id: 'classic',
     name: 'Classic ATS',
     description: 'Simple, single-column with strong headings.',
-    title: 'Software Engineer',
-    summary: 'Impact-driven engineer with strong fundamentals in web and systems.',
   },
   {
     id: 'modern',
     name: 'Modern Professional',
     description: 'Sharper headings and executive-ready spacing.',
-    title: 'Product Engineer',
-    summary: 'Customer-focused engineer delivering polished, performant experiences.',
   },
   {
     id: 'student',
     name: 'Student Starter',
     description: 'Project-first layout for internships and freshers.',
-    title: 'CS Student',
-    summary: 'CS student with project experience in full-stack apps and ML.',
   },
   {
     id: 'senior',
     name: 'Senior Impact',
     description: 'Leadership and metrics-focused sections.',
-    title: 'Senior Engineer',
-    summary: 'Senior engineer leading cross-functional delivery and scaling systems.',
   },
 ];
 
@@ -55,7 +47,7 @@ export default function DashboardPage() {
   }, []);
 
   const templateQuery = useMemo(() => `?template=${selectedTemplate}`, [selectedTemplate]);
-  const previewResume = resumes[0];
+  const previewResume = resumes[0] || undefined;
   const activeTemplate = hoveredTemplate || selectedTemplate;
 
   return (
@@ -66,14 +58,14 @@ export default function DashboardPage() {
             <h2>Your resumes</h2>
             <p className="small">Create, duplicate, and manage all versions in one place.</p>
           </div>
-          <Link className="btn" href={`/resume${templateQuery}`}>Create new</Link>
+          <Link className="btn" href={`/resume/start${templateQuery}`}>Create new</Link>
         </div>
         {message && <p className="small">{message}</p>}
         <div className="resume-grid">
           {resumes.map((r) => (
             <div key={r.id} className="card resume-card">
               <div className="resume-thumb">
-                <TemplatePreview templateId={activeTemplate} resume={r} fallback={{ title: r.title, summary: r.summary }} />
+                <TemplatePreview templateId={activeTemplate} resume={r} />
               </div>
               <div className="resume-card__meta">
                 {renamingId === r.id ? (
@@ -142,7 +134,7 @@ export default function DashboardPage() {
       <section className="card col-5">
         <h3>Create new</h3>
         <p className="small">Start from a clean ATS-safe template.</p>
-        <Link className="btn" href={`/resume${templateQuery}`}>New resume</Link>
+        <Link className="btn" href={`/resume/start${templateQuery}`}>New resume</Link>
       </section>
 
       <section className="card col-12">
@@ -160,12 +152,12 @@ export default function DashboardPage() {
               style={{
                 textAlign: 'left',
                 cursor: 'pointer',
-                border: t.id === selectedTemplate ? '2px solid #c94722' : undefined,
+                border: t.id === selectedTemplate ? '2px solid #2f5f8f' : undefined,
               }}
             >
               <strong>{t.name}</strong>
               <p className="small">{t.description}</p>
-              <TemplatePreview templateId={t.id} resume={previewResume} fallback={{ title: t.title, summary: t.summary }} />
+              <TemplatePreview templateId={t.id} resume={previewResume} />
             </button>
           ))}
         </div>
@@ -177,16 +169,22 @@ export default function DashboardPage() {
 function TemplatePreview({
   templateId,
   resume,
-  fallback,
 }: {
   templateId: string;
   resume?: Resume;
-  fallback: { title: string; summary: string };
 }) {
   const accent = templateId === 'senior' ? '#1f3a5f' : templateId === 'student' ? '#2f7a5d' : '#111';
-  const title = resume?.title || fallback.title;
-  const summary = resume?.summary || fallback.summary;
-  const skills = resume?.skills?.length ? resume.skills.slice(0, 6).join(', ') : 'Add skills to preview.';
+  if (!resume) {
+    return (
+      <div style={{ borderTop: `1px solid ${accent}`, paddingTop: 8, marginTop: 8 }}>
+        <div className="small"><strong>No resume yet</strong></div>
+        <div className="small" style={{ marginTop: 4 }}>Create or upload a resume to preview templates.</div>
+      </div>
+    );
+  }
+  const title = resume.title || resume.contact?.fullName || 'Untitled Resume';
+  const summary = resume.summary || 'No summary added yet.';
+  const skills = resume.skills?.length ? resume.skills.slice(0, 6).join(', ') : 'No skills added yet.';
   return (
     <div style={{ borderTop: `1px solid ${accent}`, paddingTop: 8, marginTop: 8 }}>
       <div className="small"><strong>{title}</strong></div>

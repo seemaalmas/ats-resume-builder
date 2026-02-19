@@ -19,7 +19,9 @@ export function computeExperienceLevel(input: {
       meaningful.map((entry) => normalizeCompany(entry.company)).filter(Boolean),
     ).size,
     rolesWithDateCount: meaningful.filter((entry) => {
-      return Boolean(parseDateToken(entry.startDate || '', false) && parseDateToken(entry.endDate || '', true));
+      const hasStart = parseDateToken(entry.startDate || '', false);
+      const hasEnd = parseDateToken(entry.endDate || '', true);
+      return Boolean(hasStart || hasEnd);
     }).length,
     roleCompanyPatternCount: meaningful.filter((entry) => entry.role.trim() && entry.company.trim()).length,
     estimatedTotalMonths: estimateTotalMonths(meaningful),
@@ -87,7 +89,11 @@ function parseDateToken(token: string, end: boolean) {
     const month = monthMap[monthYear[1].slice(0, 4)] || monthMap[monthYear[1].slice(0, 3)] || 1;
     return { year: Number(monthYear[2]), month };
   }
-  const yearMonth = clean.match(/(\d{4})[-/](\d{1,2})/);
+  const monthYearNumeric = clean.match(/\b(\d{1,2})[-/](19\d{2}|20\d{2})\b/);
+  if (monthYearNumeric) {
+    return { year: Number(monthYearNumeric[2]), month: Math.max(1, Math.min(12, Number(monthYearNumeric[1]))) };
+  }
+  const yearMonth = clean.match(/\b(19\d{2}|20\d{2})[-/](\d{1,2})\b/);
   if (yearMonth) {
     return { year: Number(yearMonth[1]), month: Math.max(1, Math.min(12, Number(yearMonth[2]))) };
   }

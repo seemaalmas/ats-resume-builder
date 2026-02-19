@@ -5,6 +5,7 @@
   "description": "Next.js (App Router) web client",
   "scripts": {
     "lint": "next lint",
+    "test": "tsx --test tests/**/*.test.ts",
     "build": "next build",
     "dev": "next dev",
     "start": "next start"
@@ -20,6 +21,7 @@
     "@types/node": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",
+    "tsx": "^4.20.5",
     "typescript": "latest"
   }
 }

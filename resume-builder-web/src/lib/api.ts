@@ -22,6 +22,25 @@ export type {
 export type AuthResponse = { user: User; accessToken: string; refreshToken: string };
 export type UploadResumeResponse = ResumeImportResult & {
   text?: string;
+  fileName?: string;
+  signals?: {
+    roleCount: number;
+    distinctCompanyCount: number;
+    rolesWithDateCount: number;
+    roleCompanyPatternCount: number;
+    estimatedTotalMonths: number;
+  };
+  debug?: {
+    experienceSignals?: {
+      roleCount: number;
+      distinctCompanyCount: number;
+      rolesWithDateCount: number;
+      roleCompanyPatternCount: number;
+      estimatedTotalMonths: number;
+    };
+    sectionHits?: Record<string, number>;
+    dateMatches?: string[];
+  };
   parsed?: ResumeImportResult;
 };
 
@@ -36,6 +55,9 @@ type ResumePayload = {
   };
   summary: string;
   skills: string[];
+  technicalSkills?: string[];
+  softSkills?: string[];
+  languages?: string[];
   experience: {
     company: string;
     role: string;
@@ -48,13 +70,16 @@ type ResumePayload = {
     degree: string;
     startDate: string;
     endDate: string;
-    details: string[];
+    details?: string[];
+    gpa?: number | null;
+    percentage?: number | null;
   }[];
   projects?: {
     name: string;
     role?: string;
     startDate?: string;
     endDate?: string;
+    url?: string;
     highlights: string[];
   }[];
   certifications?: {
@@ -78,12 +103,69 @@ type IngestResumeResponse = {
   };
 };
 
+type CompanySuggestResponse = {
+  query: string;
+  suggestions: string[];
+};
+
+type MetaSuggestResponse = {
+  items: string[];
+};
+
+export type AdminSettingsResponse = {
+  flags: {
+    resumeCreationRateLimitEnabled: boolean;
+  };
+  updatedAt: string | null;
+  forcedDisabled: boolean;
+};
+
+export type ApiFieldError = {
+  path: string;
+  message: string;
+  suggestions?: string[];
+};
+
+export type ApiErrorDetails = {
+  status: number;
+  code?: string;
+  message: string;
+  errors: string[];
+  fields: ApiFieldError[];
+  raw: unknown;
+};
+
+export class ApiRequestError extends Error {
+  status: number;
+  code?: string;
+  errors: string[];
+  fields: ApiFieldError[];
+  raw: unknown;
+
+  constructor(details: ApiErrorDetails) {
+    super(details.message);
+    this.name = 'ApiRequestError';
+    this.status = details.status;
+    this.code = details.code;
+    this.errors = details.errors;
+    this.fields = details.fields;
+    this.raw = details.raw;
+  }
+}
+
+export function isApiRequestError(error: unknown): error is ApiRequestError {
+  return error instanceof ApiRequestError;
+}
+
 const baseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
+const AUTH_STATE_CHANGED_EVENT = 'auth-state-changed';
+export const RESUME_CREATE_RATE_LIMIT_CODE = 'RESUME_CREATE_RATE_LIMITED';
 
 const storageKeys = {
   accessToken: 'accessToken',
   refreshToken: 'refreshToken',
   userId: 'userId',
+  userEmail: 'userEmail',
 };
 
 export function getAccessToken() {
@@ -101,11 +183,40 @@ function getUserId() {
   return localStorage.getItem(storageKeys.userId) || '';
 }
 
+export function getCurrentUserId() {
+  return getUserId();
+}
+
+export function getCurrentUserEmail() {
+  if (typeof window === 'undefined') return '';
+  const stored = localStorage.getItem(storageKeys.userEmail) || '';
+  if (stored) return stored;
+  const payload = decodeJwtPayload(getAccessToken());
+  const email = typeof payload?.email === 'string' ? payload.email : '';
+  if (email) {
+    localStorage.setItem(storageKeys.userEmail, email);
+  }
+  return email;
+}
+
+export function isCurrentUserAdmin() {
+  if (typeof window === 'undefined') return false;
+  const adminIds = parseCsvSet(process.env.NEXT_PUBLIC_ADMIN_USER_IDS);
+  const adminEmails = parseCsvSet(process.env.NEXT_PUBLIC_ADMIN_EMAILS);
+  const userId = getCurrentUserId().toLowerCase();
+  const email = getCurrentUserEmail().toLowerCase();
+  if (userId && adminIds.has(userId)) return true;
+  if (email && adminEmails.has(email)) return true;
+  return false;
+}
+
 function setAuthTokens(auth: AuthResponse) {
   if (typeof window === 'undefined') return;
   localStorage.setItem(storageKeys.accessToken, auth.accessToken);
   localStorage.setItem(storageKeys.refreshToken, auth.refreshToken);
   localStorage.setItem(storageKeys.userId, auth.user.id);
+  localStorage.setItem(storageKeys.userEmail, auth.user.email);
+  notifyAuthStateChanged();
 }
 
 function clearAuthTokens() {
@@ -113,13 +224,45 @@ function clearAuthTokens() {
   localStorage.removeItem(storageKeys.accessToken);
   localStorage.removeItem(storageKeys.refreshToken);
   localStorage.removeItem(storageKeys.userId);
+  localStorage.removeItem(storageKeys.userEmail);
+  notifyAuthStateChanged();
+}
+
+function notifyAuthStateChanged() {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new Event(AUTH_STATE_CHANGED_EVENT));
+}
+
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  const clean = String(token || '').trim();
+  if (!clean) return null;
+  const parts = clean.split('.');
+  if (parts.length < 2) return null;
+  try {
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=');
+    const json = window.atob(padded);
+    const payload = JSON.parse(json);
+    return payload && typeof payload === 'object' ? payload as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseCsvSet(raw?: string) {
+  return new Set(
+    String(raw || '')
+      .split(',')
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean),
+  );
 }
 
 function isDev() {
   return process.env.NODE_ENV !== 'production';
 }
 
-async function readApiError(res: Response, fallback: string) {
+async function readApiErrorDetails(res: Response, fallback: string): Promise<ApiErrorDetails> {
   const contentType = res.headers.get('content-type') || '';
   let payload: unknown = null;
   try {
@@ -142,40 +285,93 @@ async function readApiError(res: Response, fallback: string) {
     console.error('[API Error]', { status: res.status, url: res.url, payload });
   }
 
+  const details: ApiErrorDetails = {
+    status: res.status,
+    code: undefined,
+    message: fallback,
+    errors: [],
+    fields: [],
+    raw: payload,
+  };
+
   if (typeof payload === 'string') {
     const trimmed = payload.trim();
-    return trimmed || fallback;
+    details.message = trimmed || fallback;
+    details.errors = details.message ? [details.message] : [];
+    return details;
   }
-  if (payload && typeof payload === 'object') {
-    const anyPayload = payload as Record<string, unknown>;
-    if (Array.isArray(anyPayload.errors) && anyPayload.errors.length) {
-      const normalizedErrors = anyPayload.errors
-        .map((item) => {
-          if (typeof item === 'string') return item;
-          if (item && typeof item === 'object') {
-            const obj = item as Record<string, unknown>;
-            const message = typeof obj.message === 'string' ? obj.message : '';
-            const path = typeof obj.path === 'string' ? obj.path : '';
-            if (message && path) return `${path}: ${message}`;
-            return message;
-          }
-          return '';
-        })
-        .filter(Boolean)
-        .join(' ');
-      if (normalizedErrors) return normalizedErrors;
+
+  if (!payload || typeof payload !== 'object') {
+    return details;
+  }
+
+  const anyPayload = payload as Record<string, unknown>;
+  if (typeof anyPayload.code === 'string' && anyPayload.code.trim()) {
+    details.code = anyPayload.code.trim();
+  }
+
+  if (Array.isArray(anyPayload.errors)) {
+    const messages: string[] = [];
+    const fields: ApiFieldError[] = [];
+    for (const item of anyPayload.errors) {
+      if (typeof item === 'string') {
+        const clean = item.trim();
+        if (clean) messages.push(clean);
+        continue;
+      }
+      if (item && typeof item === 'object') {
+        const obj = item as Record<string, unknown>;
+        const path = typeof obj.path === 'string' ? obj.path : '';
+        const message = typeof obj.message === 'string' ? obj.message : '';
+        if (path && message) {
+          const suggestions = Array.isArray(obj.suggestions)
+            ? obj.suggestions.map((entry) => String(entry || '').trim()).filter(Boolean)
+            : undefined;
+          fields.push({ path, message, suggestions: suggestions && suggestions.length ? suggestions : undefined });
+          messages.push(`${path}: ${message}`);
+          continue;
+        }
+        if (message) messages.push(message);
+      }
     }
-    if (Array.isArray(anyPayload.message)) {
-      return anyPayload.message.filter((item) => typeof item === 'string').join(' ');
-    }
-    if (typeof anyPayload.message === 'string') {
-      return anyPayload.message;
-    }
-    if (typeof anyPayload.error === 'string') {
-      return anyPayload.error;
+    details.errors = messages;
+    details.fields = fields;
+  }
+
+  if (Array.isArray(anyPayload.fields)) {
+    const fieldItems = (anyPayload.fields as unknown[])
+      .map((item) => {
+        if (!item || typeof item !== 'object') return null;
+        const obj = item as Record<string, unknown>;
+        const path = typeof obj.path === 'string' ? obj.path.trim() : '';
+        const message = typeof obj.message === 'string' ? obj.message.trim() : '';
+        if (!path || !message) return null;
+        const suggestions = Array.isArray(obj.suggestions)
+          ? obj.suggestions.map((entry) => String(entry || '').trim()).filter(Boolean)
+          : undefined;
+        return { path, message, suggestions: suggestions && suggestions.length ? suggestions : undefined };
+      })
+      .filter(Boolean) as ApiFieldError[];
+    if (fieldItems.length) {
+      details.fields = fieldItems;
     }
   }
-  return fallback;
+
+  if (typeof anyPayload.message === 'string' && anyPayload.message.trim()) {
+    details.message = anyPayload.message.trim();
+  } else if (Array.isArray(anyPayload.message)) {
+    const messages = anyPayload.message.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean);
+    if (messages.length) details.message = messages.join(' ');
+  } else if (typeof anyPayload.error === 'string' && anyPayload.error.trim()) {
+    details.message = anyPayload.error.trim();
+  } else if (details.errors.length) {
+    details.message = details.errors.join(' ');
+  }
+
+  if (!details.errors.length && details.message) {
+    details.errors = [details.message];
+  }
+  return details;
 }
 
 async function request<T>(path: string, options: RequestInit = {}, retry = true): Promise<T> {
@@ -198,7 +394,7 @@ async function request<T>(path: string, options: RequestInit = {}, retry = true)
     }
   }
 
-  if (!res.ok) throw new Error(await readApiError(res, 'Request failed'));
+  if (!res.ok) throw new ApiRequestError(await readApiErrorDetails(res, 'Request failed'));
   return res.json() as Promise<T>;
 }
 
@@ -221,7 +417,7 @@ async function upload<T>(path: string, formData: FormData): Promise<T> {
     }
   }
 
-  if (!res.ok) throw new Error(await readApiError(res, 'Upload failed'));
+  if (!res.ok) throw new ApiRequestError(await readApiErrorDetails(res, 'Upload failed'));
   return res.json() as Promise<T>;
 }
 
@@ -231,7 +427,7 @@ export async function refresh(payload: RefreshPayload): Promise<AuthResponse> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) throw new Error(await readApiError(res, 'Refresh failed'));
+  if (!res.ok) throw new ApiRequestError(await readApiErrorDetails(res, 'Refresh failed'));
   return res.json() as Promise<AuthResponse>;
 }
 
@@ -307,6 +503,18 @@ export const api = {
       body: JSON.stringify({}),
     }),
 
+  companySuggest: (query: string) =>
+    request<CompanySuggestResponse>(`/companies/suggest?q=${encodeURIComponent(query || '')}`),
+
+  suggestInstitutions: (query: string, limit = 10) =>
+    request<MetaSuggestResponse>(`/meta/suggest/institutions?q=${encodeURIComponent(query || '')}&limit=${encodeURIComponent(String(limit))}`),
+
+  suggestSkills: (query: string, type: 'technical' | 'soft', limit = 10) =>
+    request<MetaSuggestResponse>(`/meta/suggest/skills?q=${encodeURIComponent(query || '')}&type=${encodeURIComponent(type)}&limit=${encodeURIComponent(String(limit))}`),
+
+  suggestCertifications: (query: string, limit = 10) =>
+    request<MetaSuggestResponse>(`/meta/suggest/certifications?q=${encodeURIComponent(query || '')}&limit=${encodeURIComponent(String(limit))}`),
+
   parseJd: (text: string) =>
     request<JdParseResult>(`/ai/parse-jd`, {
       method: 'POST',
@@ -336,6 +544,15 @@ export const api = {
       method: 'POST',
     }),
 
+  getAdminSettings: () =>
+    request<AdminSettingsResponse>('/admin/settings'),
+
+  setResumeCreationRateLimitEnabled: (enabled: boolean) =>
+    request<AdminSettingsResponse>('/admin/settings/rate-limit', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+
   downloadPdf: async (id: string) => {
     const res = await fetch(`${baseUrl}/resumes/${id}/pdf`, {
       method: 'GET',
@@ -343,7 +560,7 @@ export const api = {
         ...(getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : {}),
       },
     });
-    if (!res.ok) throw new Error(await readApiError(res, 'PDF export failed'));
+    if (!res.ok) throw new ApiRequestError(await readApiErrorDetails(res, 'PDF export failed'));
     const blob = await res.blob();
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -362,7 +579,7 @@ export const api = {
         ...(getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : {}),
       },
     });
-    if (!res.ok) throw new Error(await readApiError(res, 'PDF export failed'));
+    if (!res.ok) throw new ApiRequestError(await readApiErrorDetails(res, 'PDF export failed'));
     return res.blob();
   },
 };

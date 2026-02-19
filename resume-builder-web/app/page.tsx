@@ -10,7 +10,7 @@ export default function Page() {
         </p>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <Link className="btn" href="/auth/register">Get started</Link>
-          <Link className="btn secondary" href="/resume">Open editor</Link>
+          <Link className="btn secondary" href="/resume/start">Start resume</Link>
         </div>
       </section>
 
