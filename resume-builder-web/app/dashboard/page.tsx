@@ -2,10 +2,13 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { api, Resume, getAccessToken } from '@/src/lib/api';
-import { templates } from '@/src/components/TemplatePreview';
+import { TemplatePreview, templates, type TemplateId } from '@/src/components/TemplatePreview';
+import { buildTemplateSelectionRoute, resumeFromApi, buildResumePreview } from '@/src/lib/resume-flow';
 
 export default function DashboardPage() {
+  const router = useRouter();
   const [resumes, setResumes] = useState<Resume[]>([]);
   const [message, setMessage] = useState('');
   const [selectedTemplate, setSelectedTemplate] = useState(templates[0]?.id || 'classic');
@@ -26,7 +29,21 @@ export default function DashboardPage() {
 
   const templateQuery = useMemo(() => `?template=${selectedTemplate}`, [selectedTemplate]);
   const previewResume = resumes[0] || undefined;
+  const previewData = useMemo(() => {
+    if (!previewResume) return null;
+    const draft = resumeFromApi(previewResume);
+    return buildResumePreview(draft);
+  }, [previewResume]);
   const activeTemplate = hoveredTemplate || selectedTemplate;
+
+  const handleTemplateClick = (templateId: TemplateId) => {
+    setSelectedTemplate(templateId);
+    if (previewResume) {
+      router.push(buildTemplateSelectionRoute(previewResume.id));
+    } else {
+      router.push(`/resume/start?template=${templateId}`);
+    }
+  };
 
   return (
     <main className="grid">
@@ -43,7 +60,7 @@ export default function DashboardPage() {
           {resumes.map((r) => (
             <div key={r.id} className="card resume-card">
               <div className="resume-thumb">
-                <TemplatePreview templateId={activeTemplate} resume={r} />
+                <DashboardResumeThumb templateId={activeTemplate} resume={r} />
               </div>
               <div className="resume-card__meta">
                 {renamingId === r.id ? (
@@ -117,25 +134,34 @@ export default function DashboardPage() {
 
       <section className="card col-12">
         <h3>Templates</h3>
-        <p className="small">Pick a starter template. Your latest resume content will be previewed.</p>
-        <div className="grid" style={{ marginTop: 12 }}>
+        <p className="small">Pick a template to preview and apply. Click any card to open the full preview experience.</p>
+        <div className="template-grid" data-testid="dashboard-template-grid" style={{ marginTop: 12 }}>
           {templates.map((t) => (
             <button
               key={t.id}
               type="button"
-              className="card col-4"
+              className={`template-card ${t.id === selectedTemplate ? 'active' : ''}`}
+              data-template-id={t.id}
               onMouseEnter={() => setHoveredTemplate(t.id)}
               onMouseLeave={() => setHoveredTemplate('')}
-              onClick={() => setSelectedTemplate(t.id)}
-              style={{
-                textAlign: 'left',
-                cursor: 'pointer',
-                border: t.id === selectedTemplate ? '2px solid #2f5f8f' : undefined,
-              }}
+              onClick={() => handleTemplateClick(t.id)}
             >
-              <strong>{t.name}</strong>
-              <p className="small">{t.description}</p>
-              <TemplatePreview templateId={t.id} resume={previewResume} />
+              <div className="template-card__preview">
+                {previewData && (
+                  <TemplatePreview
+                    templateId={t.id}
+                    resume={previewData}
+                    compact
+                  />
+                )}
+              </div>
+              <div className="template-card__meta">
+                <div>
+                  <strong>{t.name}</strong>
+                  <div className="small">{t.description}</div>
+                </div>
+                <span className="pill">{t.id === selectedTemplate ? 'Selected' : 'Preview'}</span>
+              </div>
             </button>
           ))}
         </div>
@@ -144,30 +170,20 @@ export default function DashboardPage() {
   );
 }
 
-function TemplatePreview({
+function DashboardResumeThumb({
   templateId,
   resume,
 }: {
   templateId: string;
-  resume?: Resume;
+  resume: Resume;
 }) {
-  const accent = templateId === 'senior' ? '#1f3a5f' : templateId === 'student' ? '#2f7a5d' : '#111';
-  if (!resume) {
-    return (
-      <div style={{ borderTop: `1px solid ${accent}`, paddingTop: 8, marginTop: 8 }}>
-        <div className="small"><strong>No resume yet</strong></div>
-        <div className="small" style={{ marginTop: 4 }}>Create or upload a resume to preview templates.</div>
-      </div>
-    );
-  }
-  const title = resume.title || resume.contact?.fullName || 'Untitled Resume';
-  const summary = resume.summary || 'No summary added yet.';
-  const skills = resume.skills?.length ? resume.skills.slice(0, 6).join(', ') : 'No skills added yet.';
+  const draft = useMemo(() => resumeFromApi(resume), [resume]);
+  const data = useMemo(() => buildResumePreview(draft), [draft]);
   return (
-    <div style={{ borderTop: `1px solid ${accent}`, paddingTop: 8, marginTop: 8 }}>
-      <div className="small"><strong>{title}</strong></div>
-      <div className="small" style={{ marginTop: 4 }}>{summary}</div>
-      <div className="small" style={{ marginTop: 4, color: '#444' }}>{skills}</div>
-    </div>
+    <TemplatePreview
+      templateId={templateId}
+      resume={data}
+      compact
+    />
   );
 }
