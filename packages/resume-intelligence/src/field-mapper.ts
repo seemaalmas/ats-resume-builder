@@ -10,6 +10,7 @@ import { ParsedResumeSchema } from 'resume-schemas';
 import type { ParsedResumeText } from './resume-parser.js';
 import { computeExperienceLevel } from './experience-level.js';
 import { normalizeHeading } from './section-normalizer.js';
+import { enhanceExperienceExtraction } from './experience-enhancer.js';
 
 export type MappedResumeResult = ParsedResume & {
   signals: {
@@ -69,23 +70,35 @@ export function mapParsedResume(parsed: ParsedResumeText): MappedResumeResult {
   const mappedUnsorted = getUnmappedText(parsed.sections);
   const experienceSanitized = sanitizeExperienceForStrictSave(experienceRaw);
   const educationSanitized = sanitizeEducationForStrictSave(educationRaw);
+  const shouldEnhanceExperience = experienceSanitized.items.length < 1
+    || experienceSanitized.items.some((item) => !item.company || !item.role);
+  const experienceAfterEnhancement = shouldEnhanceExperience
+    ? enhanceExperienceExtraction({
+      rawText: parsed.lines.join('\n'),
+      parsed,
+      currentExperience: experienceSanitized.items,
+    })
+    : experienceSanitized.items;
+  const finalExperienceSanitized = shouldEnhanceExperience
+    ? sanitizeExperienceForStrictSave(experienceAfterEnhancement)
+    : experienceSanitized;
   const unmappedText = mergeUnmappedText(
     mappedUnsorted,
-    [...experienceSanitized.rejected, ...educationSanitized.rejected],
+    [...finalExperienceSanitized.rejected, ...educationSanitized.rejected],
   );
   const resumeText = [
     summary,
     skills.join(' '),
-    experienceSanitized.items.map((item) => `${item.role} ${item.company}`).join(' '),
+    finalExperienceSanitized.items.map((item) => `${item.role} ${item.company}`).join(' '),
   ].join(' ');
-  const levelResult = computeExperienceLevel({ resumeText, experience: experienceSanitized.items });
+  const levelResult = computeExperienceLevel({ resumeText, experience: finalExperienceSanitized.items });
 
   const validated = ParsedResumeSchema.parse({
     title,
     contact,
     summary,
     skills,
-    experience: experienceSanitized.items,
+    experience: finalExperienceSanitized.items,
     education: educationSanitized.items,
     projects,
     certifications,

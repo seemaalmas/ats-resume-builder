@@ -1,5 +1,7 @@
 'use client';
 
+import type { AtsScoreResult } from './api';
+
 import { create } from 'zustand';
 
 export type ContactInfo = {
@@ -56,23 +58,13 @@ export type ResumeDraft = {
   education: EducationItem[];
   projects: ProjectItem[];
   certifications: CertificationItem[];
-};
-
-export type AtsReviewResult = {
-  resumeId: string;
-  atsScore: number;
-  roleLevel: 'FRESHER' | 'MID' | 'SENIOR';
-  roleAdjustedScore: number;
-  rejectionReasons: string[];
-  improvementSuggestions: string[];
-  details: string[];
-  missingKeywords: string[];
+  templateId?: string;
 };
 
 export type AtsReviewState = {
   loading: boolean;
   error: string;
-  result: AtsReviewResult | null;
+  result: AtsScoreResult | null;
   lastCheckedAt: string;
 };
 
@@ -94,6 +86,7 @@ export function getEmptyResumeDraft(): ResumeDraft {
     education: [],
     projects: [],
     certifications: [],
+    templateId: undefined,
   };
 }
 

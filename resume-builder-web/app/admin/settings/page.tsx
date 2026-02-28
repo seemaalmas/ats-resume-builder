@@ -13,10 +13,12 @@ type Toast = { type: 'success' | 'error'; text: string } | null;
 
 export default function AdminSettingsPage() {
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [savingRateLimit, setSavingRateLimit] = useState(false);
+  const [savingPayment, setSavingPayment] = useState(false);
   const [hasAccess, setHasAccess] = useState(false);
   const [error, setError] = useState('');
-  const [enabled, setEnabled] = useState(false);
+  const [rateLimitEnabled, setRateLimitEnabled] = useState(false);
+  const [paymentEnabled, setPaymentEnabled] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [forcedDisabled, setForcedDisabled] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
@@ -56,27 +58,46 @@ export default function AdminSettingsPage() {
     };
   }, []);
 
-  const statusText = useMemo(() => (enabled ? 'Enabled' : 'Disabled'), [enabled]);
+  const rateLimitStatusText = useMemo(() => (rateLimitEnabled ? 'Enabled' : 'Disabled'), [rateLimitEnabled]);
+  const paymentStatusText = useMemo(() => (paymentEnabled ? 'Enabled' : 'Disabled'), [paymentEnabled]);
 
-  async function onSave() {
+  async function onSaveRateLimit() {
     if (!hasAccess) return;
-    setSaving(true);
+    setSavingRateLimit(true);
     setError('');
     try {
-      const next = await api.setResumeCreationRateLimitEnabled(enabled);
+      const next = await api.setResumeCreationRateLimitEnabled(rateLimitEnabled);
       applySettingsResponse(next);
-      setToast({ type: 'success', text: 'Settings saved.' });
+      setToast({ type: 'success', text: 'Rate limit setting saved.' });
     } catch (err: unknown) {
       const message = getReadableError(err, 'Failed to update rate limit setting.');
       setError(message);
       setToast({ type: 'error', text: message });
     } finally {
-      setSaving(false);
+      setSavingRateLimit(false);
+    }
+  }
+
+  async function onSavePayment() {
+    if (!hasAccess) return;
+    setSavingPayment(true);
+    setError('');
+    try {
+      const next = await api.setPaymentFeatureEnabled(paymentEnabled);
+      applySettingsResponse(next);
+      setToast({ type: 'success', text: 'Payment feature flag saved.' });
+    } catch (err: unknown) {
+      const message = getReadableError(err, 'Failed to update payment feature flag.');
+      setError(message);
+      setToast({ type: 'error', text: message });
+    } finally {
+      setSavingPayment(false);
     }
   }
 
   function applySettingsResponse(payload: AdminSettingsResponse) {
-    setEnabled(Boolean(payload.flags?.resumeCreationRateLimitEnabled));
+    setRateLimitEnabled(Boolean(payload.flags?.resumeCreationRateLimitEnabled));
+    setPaymentEnabled(Boolean(payload.flags?.paymentFeatureEnabled));
     setUpdatedAt(payload.updatedAt || null);
     setForcedDisabled(Boolean(payload.forcedDisabled));
   }
@@ -96,19 +117,33 @@ export default function AdminSettingsPage() {
         ) : null}
         {!loading && hasAccess ? (
           <div style={{ display: 'grid', gap: 12, marginTop: 12 }}>
-            <label className="label" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <input
-                type="checkbox"
-                checked={enabled}
-                onChange={(event) => setEnabled(event.target.checked)}
-                disabled={saving}
-              />
-              <span>Enable Resume Creation Rate Limit</span>
-            </label>
-            <p className="small">Current state: <strong>{statusText}</strong></p>
-            <p className="small">
-              Last updated: {updatedAt ? new Date(updatedAt).toLocaleString() : 'Not set'}
-            </p>
+            <div style={{ display: 'grid', gap: 8 }}>
+              <label className="label" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <input
+                  type="checkbox"
+                  checked={rateLimitEnabled}
+                  onChange={(event) => setRateLimitEnabled(event.target.checked)}
+                  disabled={savingRateLimit}
+                />
+                <span>Enable Resume Creation Rate Limit</span>
+              </label>
+              <p className="small">Current state: <strong>{rateLimitStatusText}</strong></p>
+              <p className="small">
+                Last updated: {updatedAt ? new Date(updatedAt).toLocaleString() : 'Not set'}
+              </p>
+            </div>
+            <div style={{ display: 'grid', gap: 8 }}>
+              <label className="label" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <input
+                  type="checkbox"
+                  checked={paymentEnabled}
+                  onChange={(event) => setPaymentEnabled(event.target.checked)}
+                  disabled={savingPayment}
+                />
+                <span>Enable Payment Feature Enforcement</span>
+              </label>
+              <p className="small">Current state: <strong>{paymentStatusText}</strong></p>
+            </div>
             {forcedDisabled ? (
               <div className="message-banner">
                 <p className="small">`FORCE_DISABLE_RATE_LIMIT=true` is active. Rate limit is currently forced OFF.</p>
@@ -119,9 +154,12 @@ export default function AdminSettingsPage() {
                 <p className="small">{error}</p>
               </div>
             ) : null}
-            <div>
-              <button className="btn" onClick={onSave} disabled={saving}>
-                {saving ? 'Saving...' : 'Save'}
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 4 }}>
+              <button className="btn" onClick={onSaveRateLimit} disabled={savingRateLimit}>
+                {savingRateLimit ? 'Saving...' : 'Save Rate Limit'}
+              </button>
+              <button className="btn" onClick={onSavePayment} disabled={savingPayment}>
+                {savingPayment ? 'Saving...' : 'Save Payment Flag'}
               </button>
             </div>
           </div>

@@ -1,16 +1,17 @@
-﻿import { BadRequestException, ForbiddenException, HttpException, HttpStatus, Injectable, NotFoundException, Optional, UnprocessableEntityException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, HttpException, HttpStatus, Injectable, NotFoundException, Optional, UnprocessableEntityException } from '@nestjs/common';
 import puppeteer from 'puppeteer';
 import { PDFParse } from 'pdf-parse';
 import mammoth from 'mammoth';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import type { CreateResumeDto, UpdateResumeDto } from 'resume-builder-shared';
+import type { AtsIssue, CreateResumeDto, UpdateResumeDto } from 'resume-builder-shared';
 import { ResumeSectionsSchema } from 'resume-schemas';
 import { ensureUsagePeriod } from '../billing/usage';
 import { rateLimitOrThrow } from '../limits/rate-limit';
 import { mapParsedResume, parseResumeText } from 'resume-intelligence';
+import type { ParsedResumeText } from 'resume-intelligence';
 import { sanitizeImportedResume } from './import-sanitizer';
-import { ACTION_VERB_REQUIRED_RATIO, analyzeActionVerbRule } from './action-verb-rule';
+import { ACTION_VERB_REQUIRED_RATIO, analyzeActionVerbRule, type ActionVerbFailure } from './action-verb-rule';
 import { SettingsService } from '../settings/settings.service';
 const KNOWN_SPOKEN_LANGUAGES = new Map<string, string>([
   ['english', 'English'],
@@ -66,8 +67,9 @@ export class ResumeService {
       throw new NotFoundException('User not found');
     }
     const normalizedUser = await ensureFreePlanFloors(this.prisma, refreshedUser);
+    const paymentFeatureEnabled = await this.isPaymentFeatureEnabled();
     const resumeCount = await this.prisma.resume.count({ where: { userId } });
-    if (resumeCount + 1 > normalizedUser.resumesLimit) {
+    if (paymentFeatureEnabled && resumeCount + 1 > normalizedUser.resumesLimit) {
       if (normalizedUser.plan === 'FREE') {
         throw new ForbiddenException('FREE_PLAN_RESUME_LIMIT_EXCEEDED: Free plan allows up to 2 resumes.');
       }
@@ -86,6 +88,9 @@ export class ResumeService {
       projects: dto.projects ?? [],
       certifications: dto.certifications ?? [],
     });
+    const templateId = typeof dto.templateId === 'string'
+      ? String(dto.templateId || '').trim() || undefined
+      : undefined;
     const categories = resolveSkillCategories({
       skills: normalized.skills,
       technicalSkills: normalized.technicalSkills,
@@ -109,6 +114,7 @@ export class ResumeService {
         education: normalized.education,
         projects: normalized.projects ?? [],
         certifications: normalized.certifications ?? [],
+        templateId,
       },
     });
     return decorateResumeWithSkillCategories(created);
@@ -196,6 +202,9 @@ export class ResumeService {
       experience: normalized.experience,
       education: normalized.education,
     });
+    const templateId = typeof dto.templateId === 'string'
+      ? String(dto.templateId || '').trim() || undefined
+      : current.templateId || undefined;
     const updated = await this.prisma.resume.update({
       where: { id },
       data: {
@@ -208,6 +217,7 @@ export class ResumeService {
         education: normalized.education,
         projects: normalized.projects,
         certifications: normalized.certifications,
+        templateId,
       },
     });
     return decorateResumeWithSkillCategories(updated);
@@ -224,8 +234,9 @@ export class ResumeService {
       throw new NotFoundException('User not found');
     }
     const normalizedUser = await ensureFreePlanFloors(this.prisma, refreshedUser);
+    const paymentFeatureEnabled = await this.isPaymentFeatureEnabled();
     const resumeCount = await this.prisma.resume.count({ where: { userId } });
-    if (resumeCount + 1 > normalizedUser.resumesLimit) {
+    if (paymentFeatureEnabled && resumeCount + 1 > normalizedUser.resumesLimit) {
       if (normalizedUser.plan === 'FREE') {
         throw new ForbiddenException('FREE_PLAN_RESUME_LIMIT_EXCEEDED: Free plan allows up to 2 resumes.');
       }
@@ -270,6 +281,7 @@ export class ResumeService {
         education: normalized.education,
         projects: normalized.projects ?? [],
         certifications: normalized.certifications ?? [],
+        templateId: resume.templateId ?? undefined,
       },
     });
     return decorateResumeWithSkillCategories(duplicated);
@@ -300,7 +312,8 @@ export class ResumeService {
     if (!refreshed) {
       throw new NotFoundException('User not found');
     }
-    if (refreshed.atsScansUsed + 1 > refreshed.atsScansLimit) {
+    const paymentFeatureEnabled = await this.isPaymentFeatureEnabled();
+    if (paymentFeatureEnabled && refreshed.atsScansUsed + 1 > refreshed.atsScansLimit) {
       if (refreshed.plan === 'FREE') {
         throw new ForbiddenException('FREE_PLAN_ATS_LIMIT_EXCEEDED: Free plan allows ATS checks for up to 2 scans.');
       }
@@ -308,6 +321,7 @@ export class ResumeService {
     }
     const resume = await this.get(userId, id);
     const resumeText = buildResumeText(resume);
+    const bulletPointers = collectBulletPointers(resume, id);
     const result = computeAtsScore({
       resumeText,
       jdText: jdText || '',
@@ -325,7 +339,17 @@ export class ResumeService {
       where: { id: userId },
       data: { atsScansUsed: refreshed.atsScansUsed + 1 },
     });
-    return { resumeId: id, ...result };
+    const issues = buildAtsIssues({
+      failedBullets: result.actionVerbRule.failedBullets,
+      bulletPointers,
+      jdUsed: result.jobDescriptionUsed,
+    });
+    return {
+      resumeId: id,
+      ...result,
+      issues,
+      meta: { jobDescriptionUsed: result.jobDescriptionUsed },
+    };
   }
 
   async generatePdf(userId: string, id: string) {
@@ -339,7 +363,8 @@ export class ResumeService {
     if (!user) {
       throw new NotFoundException('User not found');
     }
-    if (user.plan === 'FREE') {
+    const paymentFeatureEnabled = await this.isPaymentFeatureEnabled();
+    if (paymentFeatureEnabled && user.plan === 'FREE') {
       throw new ForbiddenException('Free plan does not allow PDF export.');
     }
     await ensureUsagePeriod(this.prisma, user);
@@ -347,11 +372,11 @@ export class ResumeService {
     if (!updatedUser) {
       throw new NotFoundException('User not found');
     }
-    if (updatedUser.pdfExportsUsed + 1 > updatedUser.pdfExportsLimit) {
+    if (paymentFeatureEnabled && updatedUser.pdfExportsUsed + 1 > updatedUser.pdfExportsLimit) {
       throw new ForbiddenException('PDF export limit exceeded');
     }
     const resume = await this.get(userId, id);
-    validatePdfExportSafety(resume);
+    validatePdfExportSafety(resume, { enforceMinimumScore: paymentFeatureEnabled });
     const html = renderResumeHtml(resume);
 
     await this.prisma.user.update({
@@ -400,6 +425,7 @@ export class ResumeService {
     const normalized = normalizeText(trimmed);
     const parsed = parseResumeText(normalized);
     try {
+      const dateMatches = collectDateMatches(normalized);
       const mapped = mapParsedResume(parsed);
       const sanitized = sanitizeImportedResume({
         title: options?.title?.trim() || mapped.title,
@@ -412,6 +438,13 @@ export class ResumeService {
         certifications: mapped.certifications,
         unmappedText: mapped.unmappedText,
       }, { mode: 'upload' });
+      const finalizedExperience = finalizeExperience({
+        experience: sanitized.experience,
+        parsed,
+        fullText: trimmed,
+        dateMatches,
+      });
+      sanitized.experience = finalizedExperience;
       const parsedPayload = {
         title: sanitized.title,
         contact: sanitized.contact,
@@ -428,7 +461,7 @@ export class ResumeService {
       const debugPayload = {
         experienceSignals: mapped.signals,
         sectionHits: summarizeSectionHits(parsed.sections),
-        dateMatches: collectDateMatches(normalized),
+        dateMatches,
       };
       return {
         text: normalized,
@@ -448,6 +481,11 @@ export class ResumeService {
       }
       throw error;
     }
+  }
+
+  private async isPaymentFeatureEnabled() {
+    if (!this.settingsService) return false;
+    return this.settingsService.isPaymentFeatureEnabled();
   }
 }
 
@@ -491,6 +529,324 @@ function collectDateMatches(text: string, limit = 40) {
     .map((match) => String(match[0] || '').trim())
     .filter(Boolean);
   return Array.from(new Set(matches)).slice(0, limit);
+}
+
+type ExperienceExtractionEntry = {
+  company: string;
+  role: string;
+  startDate: string;
+  endDate: string;
+  highlights: string[];
+};
+
+export function finalizeExperience(input: {
+  experience: ExperienceExtractionEntry[];
+  parsed: ParsedResumeText;
+  fullText: string;
+  dateMatches?: string[];
+}) {
+  const { experience, parsed, fullText, dateMatches } = input;
+  const matches = dateMatches ?? collectDateMatches(fullText);
+  const lowConfidence = isLowConfidenceExperience(experience, matches);
+  if (!lowConfidence) {
+    logExperienceFinalizer(false, experience.length, lowConfidence);
+    return experience;
+  }
+  const fallback = extractExperienceFromText(fullText, parsed);
+  const cleaned = fallback.map((entry) => ({
+    company: cleanExperienceValue(entry.company),
+    role: cleanExperienceValue(entry.role),
+    startDate: normalizeDateRangeToken(entry.startDate),
+    endDate: normalizeDateRangeToken(entry.endDate),
+    highlights: uniqueLines(entry.highlights.map((line) => cleanHighlightEntry(line))),
+  })).filter((entry) => entry.company || entry.role);
+  logExperienceFinalizer(cleaned.length > 0, cleaned.length, lowConfidence);
+  return cleaned.length ? cleaned : experience;
+}
+
+const EXPERIENCE_SECTION_PATTERN = /(professional\s+experience|work\s+experience|experience)/i;
+const STOP_SECTION_PATTERN = /^(skills|education|projects|certifications|achievements|hobbies|languages)\b/i;
+const DATE_RANGE_PATTERN = /((?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s*\d{4}|\b\d{4}\b)(?:\s*(?:-|to|–|—)\s*(?:present|current|now|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s*\d{4}|\b\d{4}\b))?/i;
+
+export function extractExperienceFromText(fullText: string, parsed?: ParsedResumeText) {
+  const rawText = String(fullText || '').trim();
+  if (!rawText && !(parsed?.lines?.length)) return [];
+  const rawLines = rawText
+    ? rawText.split(/\r?\n/).map((line) => line.trim())
+    : [];
+  const lines = rawLines.length ? rawLines : (parsed?.lines || []);
+  const startIndex = lines.findIndex((line) => isExperienceSection(line));
+  if (startIndex < 0) return [];
+  const relevant: string[] = [];
+  for (let i = startIndex + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!line) continue;
+    const normalizedHeading = line.toLowerCase().replace(/[:\s]+$/g, '');
+    if (STOP_SECTION_PATTERN.test(normalizedHeading) && !/^achievements:?$/i.test(line)) {
+      break;
+    }
+    relevant.push(line);
+  }
+  if (!relevant.length) return [];
+  return parseWorkExperienceEntries(relevant);
+}
+
+function isExperienceSection(line: string) {
+  if (!line) return false;
+  if (EXPERIENCE_SECTION_PATTERN.test(line)) return true;
+  return detectHeading(line.toLowerCase()) === 'experience';
+}
+
+function isLowConfidenceExperience(entries: ExperienceExtractionEntry[], matches: string[]) {
+  if (!entries.length) return true;
+  if (entries.length === 1) {
+    const entry = entries[0];
+    if (isSuspiciousFragment(entry.company) || isSuspiciousFragment(entry.role)) return true;
+    const combined = `${entry.company} ${entry.role}`;
+    if (/07\)/.test(combined) || /\(-07/.test(combined)) return true;
+    if (/\b2008\b/.test(combined) && /[()]/.test(combined)) return true;
+  }
+  if ((matches?.length ?? 0) >= 3 && entries.length < 2) return true;
+  return false;
+}
+
+function isSuspiciousFragment(value: string) {
+  const cleaned = String(value || '').trim();
+  return /^\(?-?\d{2}\)?$/.test(cleaned);
+}
+
+function logExperienceFinalizer(fallbackUsed: boolean, fallbackCount: number, lowConfidence: boolean) {
+  if (process.env.RESUME_PARSE_DEBUG !== '1') return;
+  console.debug(`[parse-upload] experience finalizer lowConfidence=${lowConfidence} fallbackUsed=${fallbackUsed} extracted=${fallbackCount}`);
+}
+
+function parseWorkExperienceEntries(lines: string[]) {
+  const entries: ExperienceExtractionEntry[] = [];
+  let pendingCompany: string | null = null;
+  let currentEntry: ExperienceExtractionEntry | null = null;
+  let highlightBuffer = '';
+
+  const flushHighlightBuffer = () => {
+    if (!currentEntry) {
+      highlightBuffer = '';
+      return;
+    }
+    const trimmed = highlightBuffer.trim();
+    if (trimmed) {
+      currentEntry.highlights.push(trimmed);
+    }
+    highlightBuffer = '';
+  };
+
+  const startEntry = (company: string, role: string, startDate: string, endDate: string) => {
+    flushHighlightBuffer();
+    const entry: ExperienceExtractionEntry = {
+      company,
+      role,
+      startDate,
+      endDate,
+      highlights: [],
+    };
+    entries.push(entry);
+    currentEntry = entry;
+    pendingCompany = null;
+  };
+
+  const appendHighlight = (line: string, nextLine: string) => {
+    if (!currentEntry) return;
+    const cleaned = cleanHighlightEntry(line);
+    if (!cleaned) return;
+    const nextTrim = nextLine.trim();
+    const nextStartsLower = /^[a-z]/.test(nextTrim);
+    const endsWithSentence = /[.?!]$/.test(cleaned);
+    const shouldContinue = (!endsWithSentence && nextStartsLower) || cleaned.endsWith(',');
+    if (highlightBuffer) {
+      highlightBuffer = `${highlightBuffer} ${cleaned}`.trim();
+    } else {
+      highlightBuffer = cleaned;
+    }
+    if (!shouldContinue) {
+      flushHighlightBuffer();
+    }
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index];
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (/^achievements:?$/i.test(line)) continue;
+    const nextLine = lines[index + 1]?.trim() ?? '';
+
+    const inline = parseInlineExperienceLine(line);
+    if (inline) {
+      startEntry(inline.company, inline.role, inline.startDate, inline.endDate);
+      continue;
+    }
+
+    if (!pendingCompany && isCompanyLineCandidate(line, nextLine)) {
+      pendingCompany = line;
+      continue;
+    }
+
+    if (pendingCompany) {
+      const parsed = parseRoleLine(line);
+      if (parsed) {
+        startEntry(pendingCompany, parsed.role, parsed.startDate, parsed.endDate);
+        continue;
+      }
+      if (isCompanyLineCandidate(line, nextLine)) {
+        pendingCompany = line;
+        continue;
+      }
+    }
+
+    if (currentEntry) {
+      appendHighlight(line, nextLine);
+    }
+  }
+
+  flushHighlightBuffer();
+  const collapsed = collapseNarrativeCompanies(entries);
+  return collapsed
+    .map((entry) => ({
+      ...entry,
+      highlights: uniqueLines(entry.highlights),
+    }))
+    .filter((entry) => entry.company || entry.role);
+}
+
+function parseInlineExperienceLine(line: string) {
+  const parsed = parseRoleLine(line);
+  if (!parsed || !parsed.role) return null;
+  const inlineMatch = parsed.beforeRange?.match(/(.+?)\s+(?:\u2014|\u2013|-|\|)\s+(.+)/);
+  if (!inlineMatch) return null;
+  return {
+    company: inlineMatch[1].trim(),
+    role: cleanRoleText(inlineMatch[2].trim()),
+    startDate: parsed.startDate,
+    endDate: parsed.endDate,
+  };
+}
+
+function parseRoleLine(line: string) {
+  const match = DATE_RANGE_PATTERN.exec(line);
+  if (!match) return null;
+  const range = match[0];
+  const tokens = range.split(/(?:-|to|â€“|â€”)/i).map((token) => token.trim()).filter(Boolean);
+  const startRaw = tokens[0] || '';
+  const endRaw = tokens.length > 1 ? tokens[tokens.length - 1] : '';
+  const beforeRange = line.slice(0, match.index).trim();
+  return {
+    role: cleanRoleText(beforeRange),
+    startDate: startRaw,
+    endDate: endRaw,
+    beforeRange,
+    rawLine: line,
+  };
+}
+
+function hasDateRange(line: string) {
+  return Boolean(DATE_RANGE_PATTERN.test(line));
+}
+
+const COMPANY_KEYWORD_PATTERN = /(inc|llc|ltd|corp|company|technologies|systems|solutions|group|partners|bank|consulting|enterprises|services|labs|digital|pvt|limited|infotech)/i;
+const NARRATIVE_VERB_PATTERN = /\b(?:owned|responsible|led|worked|developed|designed|implemented|collaborated|architected|delivered|mentored)\b/i;
+
+function collapseNarrativeCompanies(entries: ExperienceExtractionEntry[]) {
+  const output: ExperienceExtractionEntry[] = [];
+  for (const entry of entries) {
+    const companyText = String(entry.company || '').trim();
+    if (NARRATIVE_VERB_PATTERN.test(companyText)) {
+      if (!output.length) continue;
+      const previous = output[output.length - 1];
+      previous.highlights.unshift(companyText);
+      previous.highlights.push(...entry.highlights);
+      continue;
+    }
+    output.push({ ...entry, highlights: [...entry.highlights] });
+  }
+  return output;
+}
+
+function isCompanyLineCandidate(line: string, nextLine?: string) {
+  if (!line) return false;
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.length > 80) return false;
+  if (/^\(?-?\d{1,4}\)?$/.test(trimmed)) return false;
+  if (/^[-•*]/.test(trimmed)) return false;
+  if (trimmed.includes(':') && !/^achievements:?$/i.test(trimmed)) return false;
+  if (trimmed.includes('. ') || trimmed.endsWith('.')) return false;
+  if (/^as\s+/i.test(trimmed)) return false;
+  if (isSectionHeadingLine(trimmed)) return false;
+  if (containsDateToken(trimmed)) return false;
+  if (containsNarrativeVerb(trimmed)) return false;
+  if (nextLine && hasDateRange(nextLine)) return true;
+  if (COMPANY_KEYWORD_PATTERN.test(trimmed)) return true;
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  if (tokens.length >= 2 && tokens.every((word) => /^[A-Z0-9]/.test(word))) return true;
+  return false;
+}
+
+function containsDateToken(line: string) {
+  return /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|present|current|now|\d{4})\b/i.test(line);
+}
+
+function containsNarrativeVerb(line: string) {
+  return NARRATIVE_VERB_PATTERN.test(line);
+}
+
+function isSectionHeadingLine(line: string) {
+  const normalized = line.toLowerCase().replace(/[:\s]+$/g, '');
+  if (!normalized) return false;
+  if (STOP_SECTION_PATTERN.test(normalized)) return true;
+  return Boolean(detectHeading(line));
+}
+
+function cleanExperienceValue(value: string) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function cleanRoleText(value: string) {
+  const trimmed = String(value || '').replace(/\s+/g, ' ').trim();
+  return trimmed.replace(/\s*\([^)]*\)\s*$/g, '').trim();
+}
+
+function normalizeDateRangeToken(value: string) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/present|current|now/i.test(raw)) return 'Present';
+  const monthMap: Record<string, string> = {
+    jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+    jul: '07', aug: '08', sep: '09', sept: '09', oct: '10', nov: '11', dec: '12',
+  };
+  const monthYear = raw.match(/^(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+(\d{4})$/i);
+  if (monthYear) {
+    const month = monthMap[monthYear[1].slice(0, 4).toLowerCase()] || monthMap[monthYear[1].slice(0, 3).toLowerCase()];
+    return month ? `${monthYear[2]}-${month}` : `${monthYear[2]}`;
+  }
+  const mmYyyy = raw.match(/^(\d{1,2})[/-](\d{4})$/);
+  if (mmYyyy) {
+    const month = Number(mmYyyy[1]);
+    if (!Number.isNaN(month) && month >= 1 && month <= 12) {
+      return `${mmYyyy[2]}-${String(month).padStart(2, '0')}`;
+    }
+  }
+  const yyyyMm = raw.match(/^(\d{4})[/-](\d{1,2})$/);
+  if (yyyyMm) {
+    const month = Number(yyyyMm[2]);
+    if (!Number.isNaN(month) && month >= 1 && month <= 12) {
+      return `${yyyyMm[1]}-${String(month).padStart(2, '0')}`;
+    }
+  }
+  const yearOnly = raw.match(/^(\d{4})$/);
+  if (yearOnly) {
+    return yearOnly[1];
+  }
+  return raw;
+}
+
+function cleanHighlightEntry(line: string) {
+  return line.replace(/^[-*]\s*/, '').trim();
 }
 
 function validateResumeSectionsOrThrow(input: {
@@ -1508,14 +1864,14 @@ function detectExperienceLevelFromBlocks(input: {
   return 'MID' as const;
 }
 
-function validatePdfExportSafety(resume: {
+﻿function validatePdfExportSafety(resume: {
   summary: string;
   skills: string[];
   experience: unknown;
   education: unknown;
   projects?: unknown;
   certifications?: unknown;
-}) {
+}, options?: { enforceMinimumScore?: boolean }) {
   const errors: string[] = [];
   const text = buildResumeText(resume);
   const hasUnsafeFormatting = /<[^>]+>/.test(text) || /[\t|]/.test(text) || /[•◦▪★✓]/.test(text);
@@ -1537,7 +1893,8 @@ function validatePdfExportSafety(resume: {
     experienceCount: Array.isArray(resume.experience) ? resume.experience.length : 0,
   });
 
-  if (result.roleAdjustedScore < MIN_PDF_ATS_SCORE) {
+  const shouldEnforceMinimumScore = options?.enforceMinimumScore ?? true;
+  if (shouldEnforceMinimumScore && result.roleAdjustedScore < MIN_PDF_ATS_SCORE) {
     errors.push(`ATS score must be at least ${MIN_PDF_ATS_SCORE} before export.`);
   }
   if (result.rejectionReasons.length) {
@@ -1548,7 +1905,6 @@ function validatePdfExportSafety(resume: {
     throw new BadRequestException({ errors });
   }
 }
-
 function renderResumeHtml(resume: any): string {
   const summary = escapeHtml(resume.summary || '');
   const skills = Array.isArray(resume.skills) ? resume.skills : [];
@@ -1734,30 +2090,28 @@ function computeAtsScore(input: {
   experienceCount: number;
 }) {
   const resumeTokens = tokenize(input.resumeText);
-  const jdTokens = tokenize(input.jdText);
-  const jdKeywordWeights = extractKeywordWeights(input.jdText, 24);
+  const jdText = String(input.jdText || '').trim();
+  const hasJobDescription = jdText.length > 0;
+  const jdTokens = hasJobDescription ? tokenize(jdText) : new Set<string>();
+  const jdKeywordWeights = hasJobDescription ? extractKeywordWeights(jdText, 24) : new Map<string, number>();
   const jdKeywords = Array.from(jdKeywordWeights.keys());
 
-  const keywordOverlapScore = jdKeywords.length
+  const keywordOverlapScore = hasJobDescription && jdKeywords.length
     ? jdKeywords.reduce((acc, k) => acc + (resumeTokens.has(k) ? (jdKeywordWeights.get(k) || 0) : 0), 0) /
       totalWeight(jdKeywordWeights)
     : 0;
 
-  const skillCoverageScore = input.skills.length && jdKeywords.length
+  const skillCoverageScore = hasJobDescription && input.skills.length && jdKeywords.length
     ? input.skills.filter((s) => jdTokens.has(s.toLowerCase())).length / input.skills.length
     : 0;
 
   const roleLevel = detectRoleLevel({
     resumeText: input.resumeText,
-    jdText: input.jdText,
+    jdText,
     experienceCount: input.experienceCount,
   });
 
-  const sectionWeights = roleLevel === 'FRESHER'
-    ? { experience: 0.2, skills: 0.4, education: 0.2, summary: 0.2 }
-    : roleLevel === 'SENIOR'
-      ? { experience: 0.5, skills: 0.2, education: 0.1, summary: 0.2 }
-      : { experience: 0.35, skills: 0.3, education: 0.15, summary: 0.2 };
+  const sectionWeights = getSectionWeights(roleLevel);
 
   const sectionCompleteness =
     Number(input.sections.experience) * sectionWeights.experience +
@@ -1769,15 +2123,11 @@ function computeAtsScore(input: {
   const actionVerbScore = bulletQuality.actionVerbRatio;
   const bulletDensityScore = bulletQuality.densityScore;
 
-  const semanticSimilarity = input.jdText
-    ? cosineSimilarity(embedding(input.resumeText), embedding(input.jdText))
+  const semanticSimilarity = hasJobDescription
+    ? cosineSimilarity(embedding(input.resumeText), embedding(jdText))
     : 0;
 
-  const weights = roleLevel === 'FRESHER'
-    ? { keyword: 0.28, skill: 0.24, sections: 0.2, semantic: 0.12, bullets: 0.16 }
-    : roleLevel === 'SENIOR'
-      ? { keyword: 0.2, skill: 0.12, sections: 0.28, semantic: 0.2, bullets: 0.2 }
-      : { keyword: 0.3, skill: 0.2, sections: 0.22, semantic: 0.16, bullets: 0.12 };
+  const weights = selectScoringWeights(roleLevel);
 
   const roleAdjustedScore =
     weights.keyword * keywordOverlapScore +
@@ -1787,7 +2137,9 @@ function computeAtsScore(input: {
     weights.bullets * ((actionVerbScore + bulletDensityScore) / 2);
 
   const atsScore = Math.max(5, Math.min(100, Math.round(roleAdjustedScore * 100)));
-  const missingKeywords = jdKeywords.filter((k) => !resumeTokens.has(k));
+  const missingKeywords = hasJobDescription
+    ? jdKeywords.filter((k) => !resumeTokens.has(k))
+    : [];
 
   const rejectionReasons: string[] = [];
   if (!input.sections.experience) rejectionReasons.push('Missing Experience section.');
@@ -1801,7 +2153,7 @@ function computeAtsScore(input: {
   const improvementSuggestions = buildSuggestions({
     missingKeywords,
     sections: input.sections,
-    jdProvided: Boolean(input.jdText),
+    jdProvided: hasJobDescription,
     bulletQuality,
   });
 
@@ -1833,12 +2185,120 @@ function computeAtsScore(input: {
       passes: bulletQuality.actionVerbRule.passes,
       failedBullets: bulletQuality.actionVerbRule.failingBullets.map((item) => ({
         index: item.index,
+        text: item.text,
         reason: item.reason,
         suggestions: item.suggestions,
       })),
       message: bulletQuality.actionVerbRule.message,
     },
+    jobDescriptionUsed: hasJobDescription,
   };
+}
+﻿type RoleLevel = 'FRESHER' | 'MID' | 'SENIOR';
+
+type RoleLevelWeightSet = {
+  keyword: number;
+  skill: number;
+  sections: number;
+  semantic: number;
+  bullets: number;
+};
+
+type BulletPointer = {
+  section: 'experience' | 'projects';
+  resumeSectionId: string;
+  itemId: string;
+  bulletId: string;
+  field: string;
+};
+
+function getSectionWeights(roleLevel: RoleLevel) {
+  if (roleLevel === 'FRESHER') {
+    return { experience: 0.2, skills: 0.4, education: 0.2, summary: 0.2 };
+  }
+  if (roleLevel === 'SENIOR') {
+    return { experience: 0.5, skills: 0.2, education: 0.1, summary: 0.2 };
+  }
+  return { experience: 0.35, skills: 0.3, education: 0.15, summary: 0.2 };
+}
+
+function selectScoringWeights(roleLevel: RoleLevel): RoleLevelWeightSet {
+  if (roleLevel === 'FRESHER') {
+    return { keyword: 0.28, skill: 0.24, sections: 0.2, semantic: 0.12, bullets: 0.16 };
+  }
+  if (roleLevel === 'SENIOR') {
+    return { keyword: 0.2, skill: 0.12, sections: 0.28, semantic: 0.2, bullets: 0.2 };
+  }
+  return { keyword: 0.3, skill: 0.2, sections: 0.22, semantic: 0.16, bullets: 0.12 };
+}
+
+function collectBulletPointers(resume: any, resumeId?: string): BulletPointer[] {
+  const pointers: BulletPointer[] = [];
+  let normalizedIndex = 0;
+
+  const mapEntry = (section: 'experience' | 'projects', entry: any, entryIndex: number) => {
+    const highlights: string[] = Array.isArray(entry.highlights) ? entry.highlights : [];
+    highlights.forEach((highlight: string, highlightIndex: number) => {
+      const trimmed = String(highlight || '').trim();
+      if (!trimmed) return;
+      const itemId = entry.id ?? `${section}-${entryIndex}`;
+      pointers[normalizedIndex++] = {
+        section,
+        resumeSectionId: `section-${section}`,
+        itemId,
+        bulletId: `${resumeId || 'resume'}-${section}-${itemId}-bullet-${highlightIndex}`,
+        field: `highlights[${highlightIndex}]`,
+      };
+    });
+  };
+
+  const experience = Array.isArray(resume.experience) ? resume.experience : [];
+  experience.forEach((entry: any, index: number) => mapEntry('experience', entry, index));
+
+  const projects = Array.isArray(resume.projects) ? resume.projects : [];
+  projects.forEach((entry: any, index: number) => mapEntry('projects', entry, index));
+
+  return pointers;
+}
+
+function buildAtsIssues(options: { failedBullets: ActionVerbFailure[]; bulletPointers: BulletPointer[]; jdUsed: boolean }) {
+  const issues: AtsIssue[] = [];
+
+  for (const failure of options.failedBullets) {
+    const pointer = options.bulletPointers[failure.index];
+    issues.push({
+      code: 'EXP_BULLET_ACTION_VERB',
+      severity: 'error',
+      message:
+        failure.reason === 'weak_starter'
+          ? 'Start this bullet with a stronger action verb instead of a weak starter.'
+          : 'Start this bullet with a dominant action verb to improve clarity.',
+      section: pointer?.section ?? 'experience',
+      pointer: pointer
+        ? {
+            resumeSectionId: pointer.resumeSectionId,
+            itemId: pointer.itemId,
+            bulletId: pointer.bulletId,
+            field: pointer.field,
+          }
+        : undefined,
+    });
+  }
+
+  if (!options.jdUsed) {
+    issues.push({
+      code: 'JD_SUGGESTION',
+      severity: 'info',
+      message: 'Add a job description to enhance keyword matching signals.',
+      section: 'jobDescription',
+      pointer: {
+        resumeSectionId: 'section-jobDescription',
+        field: 'jobDescription',
+      },
+    });
+  }
+
+  return issues;
 }
 
 function detectRoleLevel(input: { resumeText: string; jdText: string; experienceCount: number }) {

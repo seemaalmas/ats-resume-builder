@@ -8,7 +8,7 @@ const { PrismaService } = require('../dist/prisma/prisma.service.js');
 const { JwtAuthGuard } = require('../dist/auth/jwt-auth.guard.js');
 const { AdminAuthGuard } = require('../dist/auth/admin-auth.guard.js');
 
-const RATE_LIMIT_SETTING_KEY = 'RESUME_CREATION_RATE_LIMIT_ENABLED';
+const APP_SETTING_ID = 'app-settings';
 
 JwtAuthGuard.prototype.canActivate = function canActivate(context) {
   const req = context.switchToHttp().getRequest();
@@ -25,13 +25,12 @@ function createPrisma() {
       ['admin-1', { id: 'admin-1', email: 'admin@example.com' }],
       ['user-1', { id: 'user-1', email: 'user@example.com' }],
     ]),
-    settings: new Map([
-      [RATE_LIMIT_SETTING_KEY, {
-        key: RATE_LIMIT_SETTING_KEY,
-        value: 'false',
-        updatedAt: new Date('2026-02-01T00:00:00.000Z'),
-      }],
-    ]),
+    appSetting: {
+      id: APP_SETTING_ID,
+      rateLimitEnabled: false,
+      paymentFeatureEnabled: false,
+      updatedAt: new Date('2026-02-01T00:00:00.000Z'),
+    },
   };
 
   return {
@@ -48,27 +47,28 @@ function createPrisma() {
     },
     appSetting: {
       findUnique: async ({ where }) => {
-        const row = state.settings.get(where.key);
-        return row ? { ...row } : null;
+        if (where.id === state.appSetting.id) {
+          return { ...state.appSetting };
+        }
+        return null;
       },
       upsert: async ({ where, create, update }) => {
-        const existing = state.settings.get(where.key);
-        if (existing) {
-          const next = {
-            ...existing,
-            ...(update || {}),
+        if (state.appSetting.id !== where.id) {
+          state.appSetting = {
+            id: create.id,
+            rateLimitEnabled: create.rateLimitEnabled,
+            paymentFeatureEnabled: create.paymentFeatureEnabled ?? false,
+            createdAt: new Date(),
             updatedAt: new Date(),
           };
-          state.settings.set(where.key, next);
-          return { ...next };
+          return { ...state.appSetting };
         }
-        const created = {
-          key: create.key,
-          value: create.value,
+        state.appSetting = {
+          ...state.appSetting,
+          ...(update || {}),
           updatedAt: new Date(),
         };
-        state.settings.set(create.key, created);
-        return { ...created };
+        return { ...state.appSetting };
       },
     },
     __getState: () => state,
@@ -140,6 +140,7 @@ test('admin settings endpoints block non-admin and allow admin toggle persistenc
         .expect(200);
 
       assert.equal(initial.body.flags.resumeCreationRateLimitEnabled, false);
+      assert.equal(initial.body.flags.paymentFeatureEnabled, false);
 
       const enabled = await request(app.getHttpServer())
         .put('/admin/settings/rate-limit')
@@ -157,7 +158,8 @@ test('admin settings endpoints block non-admin and allow admin toggle persistenc
         .expect(200);
 
       assert.equal(refreshed.body.flags.resumeCreationRateLimitEnabled, true);
-      assert.equal(prisma.__getState().settings.get(RATE_LIMIT_SETTING_KEY).value, 'true');
+      assert.equal(refreshed.body.flags.paymentFeatureEnabled, false);
+      assert.equal(prisma.__getState().appSetting.rateLimitEnabled, true);
 
       const disabled = await request(app.getHttpServer())
         .put('/admin/settings/rate-limit')
@@ -167,7 +169,64 @@ test('admin settings endpoints block non-admin and allow admin toggle persistenc
         .expect(200);
 
       assert.equal(disabled.body.flags.resumeCreationRateLimitEnabled, false);
-      assert.equal(prisma.__getState().settings.get(RATE_LIMIT_SETTING_KEY).value, 'false');
+      assert.equal(disabled.body.flags.paymentFeatureEnabled, false);
+      assert.equal(prisma.__getState().appSetting.rateLimitEnabled, false);
+
+      const paymentEnabled = await request(app.getHttpServer())
+        .put('/admin/settings/payment')
+        .set('x-test-user-id', 'admin-1')
+        .set('x-test-user-email', 'admin@example.com')
+        .send({ enabled: true })
+        .expect(200);
+
+      assert.equal(paymentEnabled.body.flags.paymentFeatureEnabled, true);
+      assert.equal(prisma.__getState().appSetting.paymentFeatureEnabled, true);
+
+      const paymentDisabled = await request(app.getHttpServer())
+        .put('/admin/settings/payment')
+        .set('x-test-user-id', 'admin-1')
+        .set('x-test-user-email', 'admin@example.com')
+        .send({ enabled: false })
+        .expect(200);
+
+      assert.equal(paymentDisabled.body.flags.paymentFeatureEnabled, false);
+      assert.equal(prisma.__getState().appSetting.paymentFeatureEnabled, false);
+
+      await app.close();
+    },
+  );
+});
+
+
+test('PATCH /admin/settings toggles payment flag and denies non-admin', async () => {
+  await withEnv(
+    {
+      ADMIN_EMAILS: 'admin@example.com',
+      ADMIN_USER_IDS: undefined,
+      FORCE_DISABLE_RATE_LIMIT: undefined,
+      RESUME_CREATION_RATE_LIMIT_DEFAULT: 'false',
+      NODE_ENV: 'production',
+    },
+    async () => {
+      const prisma = createPrisma();
+      const app = await createApp(prisma);
+
+      await request(app.getHttpServer())
+        .patch('/admin/settings')
+        .set('x-test-user-id', 'user-1')
+        .set('x-test-user-email', 'user@example.com')
+        .send({ paymentFeatureEnabled: true })
+        .expect(403);
+
+      const response = await request(app.getHttpServer())
+        .patch('/admin/settings')
+        .set('x-test-user-id', 'admin-1')
+        .set('x-test-user-email', 'admin@example.com')
+        .send({ paymentFeatureEnabled: true })
+        .expect(200);
+
+      assert.equal(response.body.flags.paymentFeatureEnabled, true);
+      assert.equal(prisma.__getState().appSetting.paymentFeatureEnabled, true);
 
       await app.close();
     },

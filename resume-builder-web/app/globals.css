@@ -29,7 +29,8 @@ a {
 }
 
 .main-shell {
-  max-width: 1100px;
+  width: 90vw;
+  max-width: none;
   margin: 0 auto;
   padding: 24px;
 }
@@ -95,6 +96,12 @@ a {
 .section-card--active {
   border-left-color: var(--accent);
   box-shadow: 0 10px 28px rgba(47, 95, 143, 0.16);
+}
+
+.section-card--current {
+  border-left-color: #2f5f8f;
+  background: #f5f7ff;
+  box-shadow: 0 10px 28px rgba(47, 95, 143, 0.12);
 }
 
 .section-card--locked {
@@ -970,6 +977,22 @@ a {
   gap: 20px;
 }
 
+.review-grid {
+  grid-template-columns: 80% 20%;
+}
+.review-grid > .col-7,
+.review-grid > .col-5 {
+  grid-column: auto;
+}
+
+.template-grid-layout {
+  grid-template-columns: 30% 70%;
+}
+.template-grid-layout > .col-7,
+.template-grid-layout > .col-5 {
+  grid-column: auto;
+}
+
 .col-7 {
   grid-column: span 7;
 }
@@ -1104,6 +1127,71 @@ a {
   gap: 4px;
 }
 
+.review-ats-panel__upload {
+  margin-top: 16px;
+  border: 1px solid #c8d8ea;
+  border-radius: 14px;
+  background: #f4f9ff;
+  padding: 16px;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.review-ats-panel__upload-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.leadership-hint {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.section-navigator {
+  position: sticky;
+  top: 20px;
+  align-self: start;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+}
+
+.section-navigator__head {
+  margin-bottom: 12px;
+}
+
+.section-navigator__list {
+  display: grid;
+  gap: 8px;
+}
+
+.section-navigator__item {
+  border: 1px solid #d4dfe9;
+  border-radius: 10px;
+  background: #fdfefe;
+  padding: 12px 14px;
+  text-align: left;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  color: #213750;
+}
+
+.section-navigator__item.active {
+  border-color: #2f5f8f;
+  background: #ecf3ff;
+}
+
+.section-navigator__item.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .upload-summary-panel__actions {
   display: flex;
   gap: 8px;
@@ -1194,6 +1282,10 @@ h2 {
   .skills-grid {
     grid-template-columns: 1fr;
   }
+  .review-grid,
+  .template-grid-layout {
+    grid-template-columns: repeat(6, 1fr);
+  }
 }
 
 @media (max-width: 600px) {
@@ -1215,6 +1307,10 @@ h2 {
   }
   .review-ats-panel__score strong {
     font-size: 40px;
+  }
+  .review-grid,
+  .template-grid-layout {
+    grid-template-columns: repeat(1, 1fr);
   }
 }
 

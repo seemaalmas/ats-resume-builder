@@ -1,14 +1,16 @@
-﻿import { ForbiddenException, Injectable } from '@nestjs/common';
+﻿import { ForbiddenException, Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { ensureUsagePeriod } from '../billing/usage';
 import { rateLimitOrThrow } from '../limits/rate-limit';
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class AiService {
   constructor(
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
+    @Optional() private readonly settingsService?: SettingsService,
   ) {}
 
   async parseJd(userId: string, text: string) {
@@ -86,7 +88,8 @@ export class AiService {
     if (!user) {
       throw new ForbiddenException('User not found');
     }
-    if (user.plan === 'FREE') {
+    const paymentFeatureEnabled = await this.isPaymentFeatureEnabled();
+    if (paymentFeatureEnabled && user.plan === 'FREE') {
       throw new ForbiddenException('Free plan does not allow AI suggestions.');
     }
     await ensureUsagePeriod(this.prisma, user);
@@ -101,6 +104,11 @@ export class AiService {
       where: { id: userId },
       data: { aiTokensUsed: updated.aiTokensUsed + tokens },
     });
+  }
+
+  private async isPaymentFeatureEnabled() {
+    if (!this.settingsService) return false;
+    return this.settingsService.isPaymentFeatureEnabled();
   }
 }
 

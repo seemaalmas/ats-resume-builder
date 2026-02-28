@@ -53,6 +53,7 @@ export type CreateResumeDto = {
     date?: string;
     details?: string[];
   }[];
+  templateId?: string;
 };
 
 export type UpdateResumeDto = {
@@ -99,6 +100,7 @@ export type UpdateResumeDto = {
     date?: string;
     details?: string[];
   }[];
+  templateId?: string;
 };
 
 export type ParseJdDto = {

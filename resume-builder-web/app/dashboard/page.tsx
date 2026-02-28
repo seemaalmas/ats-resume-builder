@@ -3,29 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { api, Resume, getAccessToken } from '@/src/lib/api';
-
-const templates = [
-  {
-    id: 'classic',
-    name: 'Classic ATS',
-    description: 'Simple, single-column with strong headings.',
-  },
-  {
-    id: 'modern',
-    name: 'Modern Professional',
-    description: 'Sharper headings and executive-ready spacing.',
-  },
-  {
-    id: 'student',
-    name: 'Student Starter',
-    description: 'Project-first layout for internships and freshers.',
-  },
-  {
-    id: 'senior',
-    name: 'Senior Impact',
-    description: 'Leadership and metrics-focused sections.',
-  },
-];
+import { templates } from '@/src/components/TemplatePreview';
 
 export default function DashboardPage() {
   const [resumes, setResumes] = useState<Resume[]>([]);

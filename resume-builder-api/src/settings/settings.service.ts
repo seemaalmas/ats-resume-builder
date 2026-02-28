@@ -1,12 +1,16 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library.js';
 import { PrismaService } from '../prisma/prisma.service';
-import { RESUME_CREATION_RATE_LIMIT_ENABLED_KEY } from './settings.constants';
+import { APP_SETTING_SINGLETON_ID } from './settings.constants';
 
 export type RateLimitSettingState = {
   enabled: boolean;
   updatedAt: Date | null;
   forcedDisabled: boolean;
+};
+
+export type PaymentFeatureSettingState = {
+  enabled: boolean;
+  updatedAt: Date | null;
 };
 
 @Injectable()
@@ -23,11 +27,12 @@ export class SettingsService implements OnModuleInit {
     const defaultValue = this.resolveDefaultRateLimitEnabled();
     try {
       await this.prisma.appSetting.upsert({
-        where: { key: RESUME_CREATION_RATE_LIMIT_ENABLED_KEY },
-        update: {},
+        where: { id: APP_SETTING_SINGLETON_ID },
+        update: { rateLimitEnabled: defaultValue },
         create: {
-          key: RESUME_CREATION_RATE_LIMIT_ENABLED_KEY,
-          value: String(defaultValue),
+          id: APP_SETTING_SINGLETON_ID,
+          rateLimitEnabled: defaultValue,
+          paymentFeatureEnabled: false,
         },
       });
     } catch (error: unknown) {
@@ -45,9 +50,9 @@ export class SettingsService implements OnModuleInit {
     const forcedDisabled = this.isForceDisableRateLimit();
     const defaultValue = this.resolveDefaultRateLimitEnabled();
     const setting = await this.prisma.appSetting.findUnique({
-      where: { key: RESUME_CREATION_RATE_LIMIT_ENABLED_KEY },
+      where: { id: APP_SETTING_SINGLETON_ID },
     });
-    const enabled = parseBoolean(setting?.value, defaultValue);
+    const enabled = setting?.rateLimitEnabled ?? defaultValue;
     return {
       enabled: forcedDisabled ? false : enabled,
       updatedAt: setting?.updatedAt ?? null,
@@ -62,18 +67,42 @@ export class SettingsService implements OnModuleInit {
 
   async setResumeCreationRateLimitEnabled(enabled: boolean): Promise<RateLimitSettingState> {
     const updated = await this.prisma.appSetting.upsert({
-      where: { key: RESUME_CREATION_RATE_LIMIT_ENABLED_KEY },
-      update: { value: String(enabled) },
+      where: { id: APP_SETTING_SINGLETON_ID },
+      update: { rateLimitEnabled: enabled },
       create: {
-        key: RESUME_CREATION_RATE_LIMIT_ENABLED_KEY,
-        value: String(enabled),
+        id: APP_SETTING_SINGLETON_ID,
+        rateLimitEnabled: enabled,
+        paymentFeatureEnabled: false,
       },
     });
     const forcedDisabled = this.isForceDisableRateLimit();
     return {
-      enabled: forcedDisabled ? false : parseBoolean(updated.value, false),
+      enabled: forcedDisabled ? false : updated.rateLimitEnabled,
       updatedAt: updated.updatedAt,
       forcedDisabled,
+    };
+  }
+
+  async isPaymentFeatureEnabled(): Promise<boolean> {
+    const setting = await this.prisma.appSetting.findUnique({
+      where: { id: APP_SETTING_SINGLETON_ID },
+    });
+    return Boolean(setting?.paymentFeatureEnabled);
+  }
+
+  async setPaymentFeatureEnabled(enabled: boolean): Promise<PaymentFeatureSettingState> {
+    const updated = await this.prisma.appSetting.upsert({
+      where: { id: APP_SETTING_SINGLETON_ID },
+      update: { paymentFeatureEnabled: enabled },
+      create: {
+        id: APP_SETTING_SINGLETON_ID,
+        rateLimitEnabled: this.resolveDefaultRateLimitEnabled(),
+        paymentFeatureEnabled: enabled,
+      },
+    });
+    return {
+      enabled: updated.paymentFeatureEnabled,
+      updatedAt: updated.updatedAt ?? null,
     };
   }
 

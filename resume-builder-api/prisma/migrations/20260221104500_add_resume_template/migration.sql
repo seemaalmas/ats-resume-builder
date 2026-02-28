@@ -1,0 +1,2 @@
+ALTER TABLE "Resume"
+ADD COLUMN IF NOT EXISTS "templateId" TEXT;

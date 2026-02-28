@@ -86,6 +86,14 @@ export function buildReviewAtsRoute(template = '', resumeId = '') {
   return query ? `/resume/review?${query}` : '/resume/review';
 }
 
+export function buildTemplateSelectionRoute(resumeId = '') {
+  const params = new URLSearchParams();
+  const cleanResumeId = resumeId.trim();
+  if (cleanResumeId) params.set('resumeId', cleanResumeId);
+  const query = params.toString();
+  return query ? `/resume/template?${query}` : '/resume/template';
+}
+
 export function formatRoleLevel(level: RoleLevel) {
   if (level === 'FRESHER') return 'Fresher / Entry';
   if (level === 'SENIOR') return 'Senior';
@@ -244,6 +252,7 @@ export function draftFromImport(parsed: ResumeImportResult): { resume: ResumeDra
       education: strictEducation,
       projects,
       certifications,
+      templateId: '',
     },
     unmappedText: importNotes,
   };
@@ -525,6 +534,63 @@ export function buildResumePayload(resume: ResumeDraft, sections: SectionState[]
         details: (item.details || []).map((line) => line.trim()).filter(Boolean),
       }))
       : [],
+    templateId: resume.templateId?.trim() || undefined,
+  };
+}
+
+export function buildResumePreview(resume: ResumeDraft): ResumeImportResult {
+  const skillCategories = normalizeSkillCategories({
+    skills: resume.skills || [],
+    technicalSkills: resume.technicalSkills || [],
+    softSkills: resume.softSkills || [],
+    languages: resume.languages || [],
+  });
+  return {
+    title: resume.title.trim(),
+    contact: sanitizeContact(resume.contact),
+    summary: resume.summary.trim(),
+    skills: skillCategories.skills.map((skill) => skill.trim()).filter(Boolean),
+    technicalSkills: skillCategories.technicalSkills.map((skill) => skill.trim()).filter(Boolean),
+    softSkills: skillCategories.softSkills.map((skill) => skill.trim()).filter(Boolean),
+    languages: skillCategories.languages.map((item) => item.trim()).filter(Boolean),
+    experience: resume.experience
+      .filter(isMeaningfulExperience)
+      .map((item) => ({
+        company: item.company.trim(),
+        role: item.role.trim(),
+        startDate: item.startDate.trim(),
+        endDate: item.endDate.trim(),
+        highlights: item.highlights.map((line) => line.trim()).filter(Boolean),
+      })),
+    education: resume.education
+      .map((item) => ({
+        institution: item.institution.trim(),
+        degree: item.degree.trim(),
+        startDate: item.startDate.trim(),
+        endDate: item.endDate.trim(),
+        details: (item.details || []).map((line) => line.trim()).filter(Boolean),
+        gpa: item.gpa ?? null,
+        percentage: item.percentage ?? null,
+      }))
+      .filter((item) => item.institution || item.degree || item.details.length || item.gpa != null || item.percentage != null),
+    projects: resume.projects
+      .map((item) => ({
+        name: item.name.trim(),
+        role: item.role?.trim(),
+        startDate: item.startDate?.trim(),
+        endDate: item.endDate?.trim(),
+        url: item.url?.trim(),
+        highlights: item.highlights.map((line) => line.trim()).filter(Boolean),
+      }))
+      .filter((item) => item.name || item.highlights.length || item.url),
+    certifications: resume.certifications
+      .map((item) => ({
+        name: item.name.trim(),
+        issuer: item.issuer?.trim(),
+        date: item.date?.trim(),
+        details: (item.details || []).map((line) => line.trim()).filter(Boolean),
+      }))
+      .filter((item) => item.name),
   };
 }
 
@@ -592,6 +658,7 @@ export function resumeFromApi(resume: Resume): ResumeDraft {
       date: item.date?.trim(),
       details: (item.details || []).map((line) => line.trim()).filter(Boolean),
     })),
+    templateId: resume.templateId || '',
   };
 }
 

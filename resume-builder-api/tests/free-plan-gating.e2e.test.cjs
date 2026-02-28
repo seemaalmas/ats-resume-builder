@@ -5,6 +5,7 @@ const { Test } = require('@nestjs/testing');
 const { ResumeController } = require('../dist/resume/resume.controller.js');
 const { ResumeService } = require('../dist/resume/resume.service.js');
 const { PrismaService } = require('../dist/prisma/prisma.service.js');
+const { SettingsService } = require('../dist/settings/settings.service.js');
 const { JwtAuthGuard } = require('../dist/auth/jwt-auth.guard.js');
 
 JwtAuthGuard.prototype.canActivate = function canActivate(context) {
@@ -68,6 +69,12 @@ function createPrisma() {
       stripeCurrentPeriodEnd: null,
     },
     resumes: [],
+    appSetting: {
+      id: 'app-settings',
+      rateLimitEnabled: true,
+      paymentFeatureEnabled: true,
+      updatedAt: new Date('2026-02-01T00:00:00.000Z'),
+    },
   };
 
   return {
@@ -123,6 +130,25 @@ function createPrisma() {
         return { ...removed };
       },
     },
+    appSetting: {
+      findUnique: async ({ where }) => {
+        if (where.id === state.appSetting.id) {
+          return { ...state.appSetting };
+        }
+        return null;
+      },
+      upsert: async ({ where, update }) => {
+        if (state.appSetting.id !== where.id) {
+          throw new Error('unexpected upsert key');
+        }
+        state.appSetting = {
+          ...state.appSetting,
+          ...(update || {}),
+          updatedAt: new Date(),
+        };
+        return { ...state.appSetting };
+      },
+    },
     __getState: () => state,
   };
 }
@@ -132,6 +158,7 @@ async function createApp(prisma) {
     controllers: [ResumeController],
     providers: [
       ResumeService,
+      SettingsService,
       { provide: PrismaService, useValue: prisma },
       JwtAuthGuard,
     ],

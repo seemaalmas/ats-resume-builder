@@ -68,6 +68,7 @@ export const CreateResumeSchema = z.object({
   education: z.array(EducationSchema).optional(),
   projects: z.array(ProjectSchema).optional(),
   certifications: z.array(CertificationSchema).optional(),
+  templateId: z.string().trim().min(1).optional(),
 });
 
 export const UpdateResumeSchema = z.object({
@@ -82,6 +83,7 @@ export const UpdateResumeSchema = z.object({
   education: z.array(EducationSchema).optional(),
   projects: z.array(ProjectSchema).optional(),
   certifications: z.array(CertificationSchema).optional(),
+  templateId: z.string().trim().min(1).optional(),
 });
 
 export const DuplicateResumeSchema = z.object({

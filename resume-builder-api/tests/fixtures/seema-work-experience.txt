@@ -1,0 +1,28 @@
+WORK EXPERIENCE
+Citi Corp
+Assistant Vice President (Pune, India) (Dec 2022 - Present)
+- Architected a scalable platform that handled 2M daily transactions.
+- Led a distributed team focused on delivery excellence.
+Achievements:
+- Mentored six engineers through promotions.
+- Delivered a 28% reduction in latency.
+
+Ernst & Young
+Senior Technology Consultant (Pune, Maharashtra) (Oct 2021 - Nov 2022)
+- Directed global cloud implementations and automated reporting.
+
+One Network Enterprises
+Lead UI Developer (Pune) (Aug 2017 - Aug 2020)
+- Designed a responsive front end powering logistics dashboards.
+
+Infosys Limited
+Associate Software Engineer (Pune) (Apr 2014 - Jul 2017)
+- Implemented middleware services for banking clients.
+
+The Digital Group Infotech Pvt. Ltd - Software Engineer (Jul 2008 - Mar 2014)
+- Delivered enterprise-grade applications and mentored new hires.
+
+EDUCATION
+Bachelor of Engineering, Computer Science
+State University
+2004 - 2008

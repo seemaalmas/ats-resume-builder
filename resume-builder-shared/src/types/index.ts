@@ -26,6 +26,7 @@ export type Resume = {
   education: EducationItem[];
   projects?: ProjectItem[];
   certifications?: CertificationItem[];
+  templateId?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -96,6 +97,21 @@ export type CertificationItem = {
   details?: string[];
 };
 
+export type AtsIssuePointer = {
+  resumeSectionId?: string;
+  itemId?: string;
+  bulletId?: string;
+  field?: string;
+};
+
+export type AtsIssue = {
+  code: 'EXP_BULLET_ACTION_VERB' | 'JD_SUGGESTION';
+  severity: 'error' | 'warning' | 'info';
+  message: string;
+  section: 'experience' | 'projects' | 'jobDescription';
+  pointer?: AtsIssuePointer;
+};
+
 export type AtsScoreResult = {
   resumeId: string;
   atsScore: number;
@@ -119,6 +135,10 @@ export type AtsScoreResult = {
       suggestions: string[];
     }>;
     message: string;
+  };
+  issues: AtsIssue[];
+  meta: {
+    jobDescriptionUsed: boolean;
   };
 };
 

@@ -1,13 +1,15 @@
 
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import useFeatureFlags from '@/src/hooks/use-feature-flags';
 import { RESUME_CREATE_RATE_LIMIT_CODE, api, Resume, ResumeImportResult, UploadResumeResponse, getAccessToken, isApiRequestError } from '@/src/lib/api';
 import { useResumeStore } from '@/src/lib/resume-store';
 import {
   REQUIRED_FLOW_SEQUENCE,
   buildReviewAtsRoute,
+  buildTemplateSelectionRoute,
   buildResumePayload,
   clearPendingUploadSession,
   consumePendingUploadSession,
@@ -100,6 +102,7 @@ type ResumeDraft = {
   education: EducationItem[];
   projects: ProjectItem[];
   certifications: CertificationItem[];
+  templateId?: string;
 };
 
 type SectionType =
@@ -125,23 +128,36 @@ type UploadSummary = UploadSummaryState;
 const emptyEducation: EducationItem = { institution: '', degree: '', startDate: '', endDate: '', details: [], gpa: null, percentage: null };
 const emptyCertification: CertificationItem = { name: '', issuer: '', date: '', details: [''] };
 
-type TemplateId = 'classic' | 'modern' | 'student' | 'senior';
-
-const templates: Array<{
-  id: TemplateId;
-  name: string;
-  description: string;
-  accent: string;
-  fontFamily: string;
-}> = [
-  { id: 'classic', name: 'Classic ATS', description: 'Clean single-column layout.', accent: '#111', fontFamily: '"IBM Plex Sans", "Segoe UI", Arial, sans-serif' },
-  { id: 'modern', name: 'Modern Professional', description: 'Sharper headings with ATS-safe spacing.', accent: '#2b3a55', fontFamily: '"Source Sans 3", "Segoe UI", Arial, sans-serif' },
-  { id: 'student', name: 'Student Starter', description: 'Project-first layout for early careers.', accent: '#2f7a5d', fontFamily: '"Work Sans", "Segoe UI", Arial, sans-serif' },
-  { id: 'senior', name: 'Senior Impact', description: 'Experience and impact-driven layout.', accent: '#1f3a5f', fontFamily: '"Literata", "Times New Roman", serif' },
-];
+type QuotaState = {
+  resumeBlocked: boolean;
+  atsBlocked: boolean;
+  message: string;
+};
 
 const SECTION_LABELS: Record<SectionType, string> = {
   contact: 'Header & Contact',
+  summary: 'Summary',
+  skills: 'Skills',
+  languages: 'Languages',
+  experience: 'Experience',
+  education: 'Education',
+  projects: 'Projects',
+  certifications: 'Certifications',
+};
+
+const SECTION_NAV_ORDER: SectionType[] = [
+  'contact',
+  'summary',
+  'experience',
+  'education',
+  'skills',
+  'projects',
+  'certifications',
+  'languages',
+];
+
+const SECTION_NAV_LABELS: Record<SectionType, string> = {
+  contact: 'Header',
   summary: 'Summary',
   skills: 'Skills',
   languages: 'Languages',
@@ -186,6 +202,25 @@ const SECTION_GUIDANCE: Record<SectionType, { tip: string; helper?: string }> = 
   },
 };
 
+const SECTION_ID_PREFIX = 'resume-section-';
+export const SECTION_FOCUS_OVERRIDE_MS = 1500;
+export const SECTION_FOCUS_CLEAR_MS = 50;
+type SectionChangeReason = 'focusin' | 'pointerdown' | 'keydown' | 'intersection' | 'click' | 'scroll' | 'initial';
+const SECTION_KEYS: SectionType[] = SECTION_NAV_ORDER;
+
+const BULLET_WORD_LIMIT = 28;
+const BULLET_LENGTH_WARNING = 'Experience bullets must be 28 words or fewer.';
+
+const defaultQuotaState: QuotaState = {
+  resumeBlocked: false,
+  atsBlocked: false,
+  message: '',
+};
+
+export function shouldShowQuotaBanner(paymentFeatureEnabled: boolean, message: string) {
+  return paymentFeatureEnabled && Boolean(String(message || '').trim());
+}
+
 export default function ResumeEditor() {
   const router = useRouter();
   const pathname = usePathname();
@@ -211,17 +246,11 @@ export default function ResumeEditor() {
   const [message, setMessage] = useState('');
   const [loadingUpload, setLoadingUpload] = useState(false);
   const [loadingAtsNavigation, setLoadingAtsNavigation] = useState(false);
-  const [selectedTemplate, setSelectedTemplate] = useState<TemplateId>((templateParam as TemplateId) || 'classic');
-  const [hoveredTemplate, setHoveredTemplate] = useState<TemplateId | ''>('');
   const [uploadSummary, setUploadSummary] = useState<UploadSummary | null>(null);
   const [status, setStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [lastSavedAt, setLastSavedAt] = useState<string>('');
   const [importNotes, setImportNotes] = useState('');
   const [importRoleLevel, setImportRoleLevel] = useState<'FRESHER' | 'MID' | 'SENIOR' | ''>('');
-  const [previewZoom, setPreviewZoom] = useState(1);
-  const [previewAccent, setPreviewAccent] = useState('#111');
-  const [previewFont, setPreviewFont] = useState('template');
-  const [previewSpacing, setPreviewSpacing] = useState<'compact' | 'normal' | 'airy'>('normal');
   const [exportOpen, setExportOpen] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
   const [exportIssues, setExportIssues] = useState<string[]>([]);
@@ -235,22 +264,46 @@ export default function ResumeEditor() {
   const [technicalSkillInput, setTechnicalSkillInput] = useState('');
   const [softSkillInput, setSoftSkillInput] = useState('');
   const [languageInput, setLanguageInput] = useState('');
-  const [quotaState, setQuotaState] = useState<{ resumeBlocked: boolean; atsBlocked: boolean; message: string }>({
-    resumeBlocked: false,
-    atsBlocked: false,
-    message: '',
-  });
+  const { paymentFeatureEnabled } = useFeatureFlags();
+  const [quotaState, setQuotaState] = useState<QuotaState>(() => ({ ...defaultQuotaState }));
   const [snackbar, setSnackbar] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [lastValidationCode, setLastValidationCode] = useState('');
   const [actionVerbRule, setActionVerbRule] = useState<ActionVerbRuleState>(() => createActionVerbRuleState([]));
+  const [activeSectionId, setActiveSectionId] = useState<SectionType>('contact');
+  const [showTemplatePromptModal, setShowTemplatePromptModal] = useState(false);
+  const [templatePromptHref, setTemplatePromptHref] = useState('');
+  const activeSectionIdRef = useRef<SectionType>('contact');
+  const editorRef = useRef<HTMLElement | null>(null);
+  const editingSectionRef = useRef<SectionType | null>(null);
+  const lastFocusTsRef = useRef(0);
+  const focusClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dirtyRef = useRef(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reviewAtsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const actionVerbTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reviewAtsRunRef = useRef(0);
   const snackbarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sectionDebugEnabled = process.env.NEXT_PUBLIC_SECTION_DEBUG === '1';
   const isReviewFlow = isReviewAtsPage || flowParam === 'upload' || flowParam === 'review';
+  const resumeQuotaBlocked = paymentFeatureEnabled && quotaState.resumeBlocked;
+  const atsQuotaBlocked = paymentFeatureEnabled && quotaState.atsBlocked;
+  const quotaMessage = paymentFeatureEnabled ? quotaState.message : '';
+  const showQuotaBanner = shouldShowQuotaBanner(paymentFeatureEnabled, quotaMessage);
+
+  const logSectionChange = useCallback((next: SectionType, reason: SectionChangeReason) => {
+    if (!sectionDebugEnabled) return;
+    if (typeof console !== 'undefined' && typeof console.debug === 'function') {
+      console.debug(`[section-nav] active=${next} via ${reason}`);
+    }
+  }, [sectionDebugEnabled]);
+
+  const setActiveSection = useCallback((next: SectionType, reason: SectionChangeReason) => {
+    if (activeSectionIdRef.current === next) return;
+    activeSectionIdRef.current = next;
+    logSectionChange(next, reason);
+    setActiveSectionId(next);
+  }, [logSectionChange]);
 
   useEffect(() => {
     if (!idParam && isReviewFlow) {
@@ -265,12 +318,6 @@ export default function ResumeEditor() {
   }, [idParam, templateParam, flowParam, isReviewFlow, resetResumeStore]);
 
   useEffect(() => {
-    if (templateParam) {
-      setSelectedTemplate(templateParam as TemplateId);
-    }
-  }, [templateParam]);
-
-  useEffect(() => {
     setRecentCompanies(readRecentCompanies());
   }, []);
 
@@ -278,6 +325,157 @@ export default function ResumeEditor() {
     if (snackbarTimerRef.current) clearTimeout(snackbarTimerRef.current);
     if (actionVerbTimerRef.current) clearTimeout(actionVerbTimerRef.current);
   }, []);
+
+  useEffect(() => {
+    if (!paymentFeatureEnabled) {
+      setQuotaState({ ...defaultQuotaState });
+    }
+  }, [paymentFeatureEnabled]);
+
+  useEffect(() => {
+    if (!isReviewAtsPage || typeof window === 'undefined') return;
+    const editor = editorRef.current;
+    if (!editor) return;
+    const enabledSections = new Set(sections.filter((s) => s.enabled).map((s) => s.type));
+    const trackedSections: Array<{ type: SectionType; element: HTMLElement }> = [];
+    SECTION_NAV_ORDER.forEach((type) => {
+      if (!enabledSections.has(type)) return;
+      const el = document.getElementById(`resume-section-${type}`);
+      if (!el) return;
+      trackedSections.push({ type, element: el });
+    });
+    if (!trackedSections.length) return;
+
+    setActiveSection(trackedSections[0].type, 'initial');
+
+    const sectionMeta = buildSectionMetaMap(trackedSections);
+
+    const shouldSkipForEditing = () => {
+      if (typeof document === 'undefined') return false;
+      const activeElement = document.activeElement as HTMLElement | null;
+      const activeInside = editor.contains(activeElement);
+      return shouldRespectEditingOverride(
+        editingSectionRef.current,
+        lastFocusTsRef.current,
+        SECTION_FOCUS_OVERRIDE_MS,
+        activeInside,
+      );
+    };
+
+    const clearEditingSectionIfStale = () => {
+      if (!editingSectionRef.current) return;
+      const now = Date.now();
+      if (now - lastFocusTsRef.current >= SECTION_FOCUS_OVERRIDE_MS) {
+        editingSectionRef.current = null;
+      }
+    };
+
+    const observeSections = () => {
+      const observer = new IntersectionObserver(
+        (entries) => {
+          const next = getActiveSectionFromObserverEntries(entries, sectionMeta);
+          if (!next) return;
+          if (shouldSkipForEditing()) return;
+          clearEditingSectionIfStale();
+          setActiveSection(next, 'intersection');
+        },
+        { root: editor, rootMargin: '-20% 0px -70% 0px', threshold: [0.25, 0.5, 0.75] },
+      );
+      trackedSections.forEach(({ element }) => observer.observe(element));
+      return () => observer.disconnect();
+    };
+
+    if ('IntersectionObserver' in window) {
+      const cleanup = observeSections();
+      return cleanup;
+    }
+
+    let scrollTimer: ReturnType<typeof setTimeout> | null = null;
+    const checkScroll = () => {
+      scrollTimer = null;
+      const viewportHeight = window.innerHeight || 0;
+      let candidate: { type: SectionType; top: number } | null = null;
+      let pastCandidate: { type: SectionType; top: number } | null = null;
+      trackedSections.forEach(({ type, element }) => {
+        const rect = element.getBoundingClientRect();
+        if (rect.top >= 0 && rect.top <= viewportHeight * 0.6) {
+          if (!candidate || rect.top < candidate.top) {
+            candidate = { type, top: rect.top };
+          }
+        }
+        if (rect.top < 0) {
+          if (!pastCandidate || rect.top > pastCandidate.top) {
+            pastCandidate = { type, top: rect.top };
+          }
+        }
+      });
+      const next = candidate?.type ?? pastCandidate?.type ?? trackedSections[0].type;
+      if (!next) return;
+      if (shouldSkipForEditing()) return;
+      clearEditingSectionIfStale();
+      setActiveSection(next, 'scroll');
+    };
+    const handleScroll = () => {
+      if (scrollTimer) return;
+      scrollTimer = window.setTimeout(checkScroll, 120);
+    };
+    checkScroll();
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+      if (scrollTimer) {
+        clearTimeout(scrollTimer);
+      }
+    };
+  }, [isReviewAtsPage, sections, setActiveSection]);
+
+  useEffect(() => {
+    if (!isReviewAtsPage || typeof window === 'undefined') return;
+    const editor = editorRef.current;
+    if (!editor) return;
+    const handleEditorInteraction = (event: Event) => {
+      const target = event.target as HTMLElement | null;
+      const sectionKey = getSectionKeyFromNode(target);
+      if (!sectionKey) return;
+      editingSectionRef.current = sectionKey;
+      lastFocusTsRef.current = Date.now();
+      let reason: SectionChangeReason = 'focusin';
+      if (event.type === 'pointerdown') reason = 'pointerdown';
+      if (event.type === 'keydown') reason = 'keydown';
+      setActiveSection(sectionKey, reason);
+    };
+    const handleFocusOut = (event: FocusEvent) => {
+      const relatedTarget = event.relatedTarget as HTMLElement | null;
+      if (relatedTarget && editor.contains(relatedTarget)) return;
+      if (focusClearTimerRef.current) {
+        clearTimeout(focusClearTimerRef.current);
+      }
+      focusClearTimerRef.current = window.setTimeout(() => {
+        editingSectionRef.current = null;
+        lastFocusTsRef.current = 0;
+      }, SECTION_FOCUS_CLEAR_MS);
+    };
+
+    editor.addEventListener('focusin', handleEditorInteraction, true);
+    editor.addEventListener('pointerdown', handleEditorInteraction, true);
+    editor.addEventListener('keydown', handleEditorInteraction, true);
+    editor.addEventListener('focusout', handleFocusOut, true);
+    return () => {
+      editor.removeEventListener('focusin', handleEditorInteraction, true);
+      editor.removeEventListener('pointerdown', handleEditorInteraction, true);
+      editor.removeEventListener('keydown', handleEditorInteraction, true);
+      editor.removeEventListener('focusout', handleFocusOut, true);
+      if (focusClearTimerRef.current) {
+        clearTimeout(focusClearTimerRef.current);
+      }
+    };
+  }, [isReviewAtsPage, setActiveSection]);
+
+  const handleSectionNavClick = (type: SectionType, enabled: boolean) => {
+    if (!enabled) return;
+    setActiveSection(type, 'click');
+    scrollToSection(type);
+  };
 
   useEffect(() => {
     if (!getAccessToken()) {
@@ -402,6 +600,16 @@ export default function ResumeEditor() {
     [resume.education],
   );
   const validation = useMemo(() => validateResumeDraft(resume, sections), [resume, sections]);
+
+  const showBulletLengthWarning = shouldShowBulletLengthWarning(message);
+  const firstTooLongHighlightMeta = useMemo(() => findFirstTooLongHighlight(resume.experience), [resume.experience]);
+  const firstTooLongHighlightId = firstTooLongHighlightMeta
+    ? `experience-highlight-${firstTooLongHighlightMeta.expIndex}-${firstTooLongHighlightMeta.highlightIndex}`
+    : '';
+  const scrollToFirstInvalidHighlight = useCallback(() => {
+    focusHighlightById(firstTooLongHighlightId);
+  }, [firstTooLongHighlightId]);
+
   const companySuggestionPool = useMemo(
     () => mergeCompanyPools(
       resume.experience.map((item) => item.company || ''),
@@ -515,7 +723,7 @@ export default function ResumeEditor() {
   const summaryCharCount = resume.summary.trim().length;
   const skillsCount = allSkills.length;
   const experienceBullets = resume.experience.flatMap((e) => e.highlights).filter(Boolean);
-  const longExperienceBullets = experienceBullets.filter((b) => wordCount(b) > 28);
+  const longExperienceBullets = experienceBullets.filter((b) => countWords(b) > BULLET_WORD_LIMIT);
   const hasExperienceMetrics = experienceBullets.some((b) => /\d/.test(b));
   const actionVerbEntries = useMemo<ExperienceBulletEntry[]>(
     () => buildActionVerbEntries(resume.experience),
@@ -545,55 +753,6 @@ export default function ResumeEditor() {
     experienceCount,
     roleLevel: detectedRoleLevel,
   }), [summaryCharCount, skillsCount, hasExperienceMetrics, longExperienceBullets.length, missingContact, experienceCount, detectedRoleLevel]);
-
-  const previewResume = useMemo(() => ({
-    title: resume.title.trim(),
-    contact: sanitizeContact(resume.contact),
-    summary: resume.summary.trim(),
-    skills: allSkills.map((skill) => skill.trim()).filter(Boolean),
-    technicalSkills: technicalSkills.map((skill) => skill.trim()).filter(Boolean),
-    softSkills: softSkills.map((skill) => skill.trim()).filter(Boolean),
-    languages: languages.map((item) => item.trim()).filter(Boolean),
-    experience: resume.experience.filter(isMeaningfulExperience).map((item) => ({
-      company: item.company.trim(),
-      role: item.role.trim(),
-      startDate: item.startDate.trim(),
-      endDate: item.endDate.trim(),
-      highlights: item.highlights.map((line) => line.trim()).filter(Boolean),
-    })),
-    education: resume.education
-      .map((item) => ({
-        institution: item.institution.trim(),
-        degree: item.degree.trim(),
-        startDate: item.startDate.trim(),
-        endDate: item.endDate.trim(),
-        details: (item.details || []).map((line) => line.trim()).filter(Boolean),
-        gpa: item.gpa ?? null,
-        percentage: item.percentage ?? null,
-      }))
-      .filter((item) => item.institution || item.degree || item.details.length || item.gpa != null || item.percentage != null),
-    projects: resume.projects
-      .map((item) => ({
-        name: item.name.trim(),
-        role: item.role?.trim(),
-        startDate: item.startDate?.trim(),
-        endDate: item.endDate?.trim(),
-        url: item.url?.trim(),
-        highlights: item.highlights.map((line) => line.trim()).filter(Boolean),
-      }))
-      .filter((item) => item.name || item.highlights.length || item.url),
-    certifications: resume.certifications
-      .map((item) => ({
-        name: item.name.trim(),
-        issuer: item.issuer?.trim(),
-        date: item.date?.trim(),
-        details: (item.details || []).map((line) => line.trim()).filter(Boolean),
-      }))
-      .filter((item) => item.name),
-  }), [allSkills, languages, resume, softSkills, technicalSkills]);
-
-  const activeTemplate = hoveredTemplate || selectedTemplate;
-  const previewStyle = { '--page-height': `${Math.round(1120 * previewZoom)}px` } as CSSProperties;
 
   useEffect(() => {
     if (actionVerbTimerRef.current) clearTimeout(actionVerbTimerRef.current);
@@ -714,10 +873,17 @@ export default function ResumeEditor() {
       if (!isAuto) {
         setMessage('Saved');
         showSnackbar('success', 'Changes saved.');
+        const targetResumeId = resumeId || result.id;
+        if (targetResumeId) {
+          setTemplatePromptHref(buildTemplateSelectionRoute(targetResumeId));
+          setShowTemplatePromptModal(true);
+        }
       }
       setFieldErrors({});
       setLastValidationCode('');
-      setQuotaState((prev) => ({ ...prev, resumeBlocked: false, message: prev.atsBlocked ? prev.message : '' }));
+      if (paymentFeatureEnabled) {
+        setQuotaState((prev) => ({ ...prev, resumeBlocked: false, message: prev.atsBlocked ? prev.message : '' }));
+      }
       return result;
     } catch (err: unknown) {
       setStatus('error');
@@ -730,7 +896,8 @@ export default function ResumeEditor() {
         }
       }
       const quota = detectQuotaState(err);
-      if (quota.resumeBlocked || quota.atsBlocked) {
+      const quotaActive = paymentFeatureEnabled && (quota.resumeBlocked || quota.atsBlocked);
+      if (quotaActive) {
         setQuotaState((prev) => ({
           resumeBlocked: prev.resumeBlocked || quota.resumeBlocked,
           atsBlocked: prev.atsBlocked || quota.atsBlocked,
@@ -740,7 +907,7 @@ export default function ResumeEditor() {
       if (!isAuto) {
         if (isResumeRateLimited) {
           setMessage('');
-          showSnackbar('error', quota.message || errorMessage);
+          showSnackbar('error', quotaActive ? (quota.message || errorMessage) : errorMessage);
         } else {
           setMessage(errorMessage);
           showSnackbar('error', errorMessage);
@@ -787,11 +954,14 @@ export default function ResumeEditor() {
           result: outcome.score,
           lastCheckedAt: new Date().toISOString(),
         });
-        setQuotaState((prev) => ({ ...prev, atsBlocked: false, message: prev.resumeBlocked ? prev.message : '' }));
+        if (paymentFeatureEnabled) {
+          setQuotaState((prev) => ({ ...prev, atsBlocked: false, message: prev.resumeBlocked ? prev.message : '' }));
+        }
         return;
       }
       const quota = detectQuotaState(outcome.error);
-      if (quota.resumeBlocked || quota.atsBlocked) {
+      const quotaActive = paymentFeatureEnabled && (quota.resumeBlocked || quota.atsBlocked);
+      if (quotaActive) {
         setQuotaState((prev) => ({
           resumeBlocked: prev.resumeBlocked || quota.resumeBlocked,
           atsBlocked: prev.atsBlocked || quota.atsBlocked,
@@ -842,7 +1012,8 @@ export default function ResumeEditor() {
       const errorMessage = err instanceof Error ? err.message : 'Scoring failed';
       const quota = detectQuotaState(err);
       const isResumeRateLimited = isApiRequestError(err) && err.status === 429 && err.code === RESUME_CREATE_RATE_LIMIT_CODE;
-      if (quota.resumeBlocked || quota.atsBlocked) {
+      const quotaActive = paymentFeatureEnabled && (quota.resumeBlocked || quota.atsBlocked);
+      if (quotaActive) {
         setQuotaState((prev) => ({
           resumeBlocked: prev.resumeBlocked || quota.resumeBlocked,
           atsBlocked: prev.atsBlocked || quota.atsBlocked,
@@ -1094,7 +1265,8 @@ export default function ResumeEditor() {
   const completionPercent = enabledSections.length ? Math.round((completedSectionCount / enabledSections.length) * 100) : 0;
   const requiredSectionsValid = canContinueToAts(validation.sections as any);
   const reviewAtsAttentionItems = useMemo(() => buildReviewAtsAttentionItems(atsReview.result), [atsReview.result]);
-  const reviewRouteTemplate = selectedTemplate === 'classic' ? '' : selectedTemplate;
+  const hasLeadershipAttention = reviewAtsAttentionItems.some((item) => /leadership/i.test(item));
+  const reviewRouteTemplate = templateParam && templateParam !== 'classic' ? templateParam : '';
   const reviewRouteHref = buildReviewAtsRoute(reviewRouteTemplate, resumeId);
   const editorUploadLabel = loadingUpload
     ? `Processing ${pendingUploadFileName || 'upload'}...`
@@ -1103,10 +1275,21 @@ export default function ResumeEditor() {
       : pendingUploadFileName
         ? `Selected: ${pendingUploadFileName}`
         : 'Upload Resume';
+  const editorColumnClass = isReviewAtsPage ? 'col-7' : 'col-12';
+
+  const handleTemplatePromptClose = () => {
+    setShowTemplatePromptModal(false);
+  };
+
+  const handleTemplatePromptConfirm = () => {
+    if (!templatePromptHref) return;
+    setShowTemplatePromptModal(false);
+    router.push(templatePromptHref);
+  };
 
   return (
-    <main className="grid">
-      <section className="card col-7">
+    <main className="grid review-grid">
+      <section ref={editorRef} className={`card ${editorColumnClass}`}>
         <div className="editor-header">
           <div>
             <h2>Resume Editor</h2>
@@ -1145,7 +1328,7 @@ export default function ResumeEditor() {
               <button
                 className="btn secondary"
                 onClick={() => refreshReviewAts('manual')}
-                disabled={atsReview.loading || quotaState.atsBlocked}
+                disabled={atsReview.loading || atsQuotaBlocked}
                 data-testid="check-ats-score-button"
               >
                 {atsReview.loading ? 'Checking ATS...' : 'Check ATS Score'}
@@ -1167,10 +1350,58 @@ export default function ResumeEditor() {
                 ))
                 : <li className="small">No blocking ATS issues detected.</li>}
             </ul>
+            {hasLeadershipAttention && (
+              <div className="leadership-hint">
+                <p className="hint warn" style={{ margin: 0 }}>Add leadership impact in Experience bullets.</p>
+                <button className="btn secondary" onClick={() => scrollToSection('experience')}>
+                  Go to Experience
+                </button>
+              </div>
+            )}
+            {uploadSummary && (
+              <div className="review-ats-panel__upload">
+                <div>
+                  <strong>Upload processed</strong>
+                  <p className="small">Detected experience level: {formatRoleLevel(uploadSummary.roleLevel)}.</p>
+                  <p className="small">Companies found: {uploadSummary.companyCount}. Experience entries: {uploadSummary.experienceCount}.</p>
+                  <p className="small">
+                    Signals: roles {uploadSummary.experienceSignals?.roleCount ?? 0}, dated roles {uploadSummary.experienceSignals?.rolesWithDateCount ?? 0}, estimated months {uploadSummary.experienceSignals?.estimatedTotalMonths ?? 0}.
+                  </p>
+                  <p className="small">
+                    Sections populated: {uploadSummary.sectionsPopulated.length
+                      ? uploadSummary.sectionsPopulated.map((type) => SECTION_LABELS[type]).join(', ')
+                      : 'None'}.
+                  </p>
+                  <p className="small">Next step: review {SECTION_LABELS[uploadSummary.reviewTarget as SectionType]}.</p>
+                </div>
+                <div className="review-ats-panel__upload-actions">
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      const step = REQUIRED_FLOW_SEQUENCE.indexOf('experience');
+                      if (step >= 0) setActiveStepIndex(step);
+                      scrollToSection('experience');
+                    }}
+                  >
+                    Review Experience
+                  </button>
+                  <button
+                    className="btn secondary"
+                    onClick={() => (isReviewAtsPage ? refreshReviewAts('manual') : continueToAts())}
+                    disabled={isReviewAtsPage ? (atsReview.loading || atsQuotaBlocked) : (!requiredSectionsValid || loadingAtsNavigation || atsQuotaBlocked)}
+                  >
+                    {isReviewAtsPage
+                      ? (atsReview.loading ? 'Checking ATS...' : 'Check ATS Score')
+                      : (loadingAtsNavigation ? 'Preparing ATS...' : 'Check ATS Score')}
+                  </button>
+                  <button className="btn secondary" onClick={() => setUploadSummary(null)}>Dismiss</button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
-        {uploadSummary && (
+        {!isReviewAtsPage && uploadSummary && (
           <div className="upload-summary-panel" style={{ marginTop: 16 }}>
             <div>
               <strong>Upload processed</strong>
@@ -1200,7 +1431,7 @@ export default function ResumeEditor() {
               <button
                 className="btn secondary"
                 onClick={() => (isReviewAtsPage ? refreshReviewAts('manual') : continueToAts())}
-                disabled={isReviewAtsPage ? (atsReview.loading || quotaState.atsBlocked) : (!requiredSectionsValid || loadingAtsNavigation || quotaState.atsBlocked)}
+                disabled={isReviewAtsPage ? (atsReview.loading || atsQuotaBlocked) : (!requiredSectionsValid || loadingAtsNavigation || atsQuotaBlocked)}
               >
                 {isReviewAtsPage
                   ? (atsReview.loading ? 'Checking ATS...' : 'Check ATS Score')
@@ -1352,8 +1583,9 @@ export default function ResumeEditor() {
           return (
             <div
               key={section.id}
-              id={`editor-section-${section.type}`}
-              className={`card section-card${sectionActive ? ' section-card--active' : ''}${sectionLocked ? ' section-card--locked' : ''}`}
+              id={`resume-section-${section.type}`}
+              className={`card section-card${sectionActive ? ' section-card--active' : ''}${sectionLocked ? ' section-card--locked' : ''}${section.type === activeSectionId ? ' section-card--current' : ''}`}
+              data-section-id={section.type}
               style={{ marginTop: 16, padding: 16 }}
               onFocusCapture={() => {
                 if (sectionStepIndex < 0 || sectionLocked) return;
@@ -1775,14 +2007,19 @@ export default function ResumeEditor() {
                                     ? 'Replace weak starter phrases with a strong action verb.'
                                     : 'Start this bullet with a strong action verb.'
                                   : '');
+                              const highlightLengthState = getHighlightLengthState(line || '', showBulletLengthWarning);
+                              const showLengthError = highlightLengthState.showError;
+                              const lengthHelperText = highlightLengthState.helperText;
+                              const highlightHasInputError = Boolean(highlightError || showLengthError);
                               return (
                                 <div key={`exp-highlight-${expIdx}-${highlightIdx}`} style={{ marginBottom: 8 }}>
                                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                                     <input
-                                      className={`input${highlightError ? ' input-error' : ''}`}
+                                      className={`input${highlightHasInputError ? ' input-error' : ''}`}
                                       placeholder="Improved checkout conversion by 18% by redesigning the flow."
                                       value={line}
                                       data-testid={`experience-highlight-${expIdx}-${highlightIdx}`}
+                                      data-highlight-id={`experience-highlight-${expIdx}-${highlightIdx}`}
                                       onChange={(e) => {
                                         const copy = [...resume.experience];
                                         const nextHighlights = [...(copy[expIdx].highlights || [])];
@@ -1811,6 +2048,9 @@ export default function ResumeEditor() {
                                     </button>
                                   </div>
                                   {highlightError && <p className="hint error">{highlightError}</p>}
+                                  {showLengthError && (
+                                    <p className="hint error" style={{ marginTop: 4 }}>{lengthHelperText}</p>
+                                  )}
                                   {localFailure && localFailure.suggestions.length > 0 && (
                                     <div className="field-meta" style={{ marginTop: 6 }}>
                                       {localFailure.suggestions.map((suggestion) => (
@@ -2275,16 +2515,16 @@ export default function ResumeEditor() {
           <button
             className="btn"
             onClick={() => saveDraft(false)}
-            disabled={!validation.canAutoSave || status === 'saving' || (quotaState.resumeBlocked && !resumeId)}
+            disabled={!validation.canAutoSave || status === 'saving' || (resumeQuotaBlocked && !resumeId)}
             data-testid="save-changes-button"
           >
             {status === 'saving' ? 'Saving...' : 'Save changes'}
           </button>
-          <button className="btn secondary" onClick={score} disabled={quotaState.atsBlocked}>ATS Score</button>
+          <button className="btn secondary" onClick={score} disabled={atsQuotaBlocked}>ATS Score</button>
           <button
             className="btn"
             onClick={continueToAts}
-            disabled={!requiredSectionsValid || loadingAtsNavigation || quotaState.atsBlocked}
+            disabled={!requiredSectionsValid || loadingAtsNavigation || atsQuotaBlocked}
           >
             {loadingAtsNavigation ? 'Preparing ATS...' : 'Continue to ATS'}
           </button>
@@ -2300,11 +2540,21 @@ export default function ResumeEditor() {
         {message && (
           <div className="message-banner" style={{ marginTop: 12 }}>
             <p className="small">{message}</p>
+            {showBulletLengthWarning && firstTooLongHighlightId && (
+              <button
+                type="button"
+                className="btn secondary"
+                style={{ marginTop: 6, fontSize: '0.75rem' }}
+                onClick={scrollToFirstInvalidHighlight}
+              >
+                Jump to first issue
+              </button>
+            )}
           </div>
         )}
-        {quotaState.message && (
+        {showQuotaBanner && (
           <div className="message-banner" style={{ marginTop: 12 }}>
-            <p className="small">{quotaState.message}</p>
+            <p className="small">{quotaMessage}</p>
           </div>
         )}
         {snackbar && (
@@ -2313,122 +2563,32 @@ export default function ResumeEditor() {
           </div>
         )}
       </section>
-      <section className="card col-5 preview-pane">
-        <h3>Template Gallery</h3>
-        <p className="small">Hover to preview with your data. Click to apply instantly.</p>
-        <div className="template-grid">
-          {templates.map((template) => (
-            <button
-              key={template.id}
-              type="button"
-              className={`template-card ${template.id === selectedTemplate ? 'active' : ''}`}
-              onMouseEnter={() => setHoveredTemplate(template.id)}
-              onMouseLeave={() => setHoveredTemplate('')}
-              onFocus={() => setHoveredTemplate(template.id)}
-              onBlur={() => setHoveredTemplate('')}
-              onClick={() => setSelectedTemplate(template.id)}
-            >
-              <div className="template-card__preview">
-                <TemplatePreview
-                  templateId={template.id}
-                  resume={previewResume}
-                  compact
-                  accentOverride={previewAccent}
-                  fontOverride={previewFont}
-                  spacing={previewSpacing}
-                />
-              </div>
-              <div className="template-card__meta">
-                <div>
-                  <strong>{template.name}</strong>
-                  <div className="small">{template.description}</div>
-                </div>
-                <span className="pill">{template.id === selectedTemplate ? 'Applied' : 'Preview'}</span>
-              </div>
-            </button>
-          ))}
-        </div>
-        <div className="card template-live">
-          <div className="template-live__header">
-            <div>
-              <h4 style={{ margin: 0 }}>Live Preview</h4>
-              <p className="small">Now viewing {templates.find((t) => t.id === activeTemplate)?.name}</p>
-            </div>
-            <span className="pill">{activeTemplate === selectedTemplate ? 'Applied' : 'Previewing'}</span>
+      {isReviewAtsPage && (
+        <section className="card col-5 section-navigator">
+          <div className="section-navigator__head">
+            <h3>Sections</h3>
+            <p className="small">Jump directly to each section.</p>
           </div>
-          <div className="preview-controls">
-            <div className="control">
-              <label className="label">Zoom</label>
-              <div className="control-row">
-                <button className="btn secondary" onClick={() => setPreviewZoom((z) => Math.max(0.7, Number((z - 0.1).toFixed(2))))}>-</button>
-                <input
-                  className="range"
-                  type="range"
-                  min="0.7"
-                  max="1.3"
-                  step="0.05"
-                  value={previewZoom}
-                  onChange={(e) => setPreviewZoom(Number(e.target.value))}
-                />
-                <button className="btn secondary" onClick={() => setPreviewZoom((z) => Math.min(1.3, Number((z + 0.1).toFixed(2))))}>+</button>
-                <span className="small">{Math.round(previewZoom * 100)}%</span>
-              </div>
-            </div>
-            <div className="control">
-              <label className="label">Theme color</label>
-              <div className="control-row">
-                {['#111', '#2b3a55', '#1f3a5f', '#2f7a5d', '#7a3e20'].map((color) => (
-                  <button
-                    key={color}
-                    type="button"
-                    className={`swatch ${previewAccent === color ? 'active' : ''}`}
-                    style={{ background: color }}
-                    onClick={() => setPreviewAccent(color)}
-                    aria-label={`Set theme color ${color}`}
-                  />
-                ))}
-              </div>
-            </div>
-            <div className="control">
-              <label className="label">Font</label>
-              <select className="input" value={previewFont} onChange={(e) => setPreviewFont(e.target.value)}>
-                <option value="template">Template default</option>
-                <option value="IBM Plex Sans">IBM Plex Sans</option>
-                <option value="Source Sans 3">Source Sans 3</option>
-                <option value="Work Sans">Work Sans</option>
-                <option value="Georgia">Georgia</option>
-                <option value="Times New Roman">Times New Roman</option>
-              </select>
-            </div>
-            <div className="control">
-              <label className="label">Section spacing</label>
-              <div className="control-row">
-                {(['compact', 'normal', 'airy'] as const).map((spacing) => (
-                  <button
-                    key={spacing}
-                    type="button"
-                    className={`btn secondary ${previewSpacing === spacing ? 'active' : ''}`}
-                    onClick={() => setPreviewSpacing(spacing)}
-                  >
-                    {spacing}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="template-live__canvas page-breaks" style={previewStyle}>
-            <div className="preview-zoom" style={{ transform: `scale(${previewZoom})` }}>
-              <TemplatePreview
-                templateId={activeTemplate}
-                resume={previewResume}
-                accentOverride={previewAccent}
-                fontOverride={previewFont}
-                spacing={previewSpacing}
-              />
-            </div>
-          </div>
-        </div>
-      </section>
+            <nav className="section-navigator__list">
+              {SECTION_NAV_ORDER.map((type) => {
+                const section = sections.find((item) => item.type === type);
+                const enabled = section?.enabled ?? false;
+                return (
+                    <button
+                      key={type}
+                      type="button"
+                      className={getSectionNavItemClass(type, activeSectionId, enabled)}
+                      aria-current={activeSectionId === type ? 'true' : undefined}
+                      onClick={() => handleSectionNavClick(type, enabled)}
+                      disabled={!enabled}
+                    >
+                      {SECTION_NAV_LABELS[type]}
+                    </button>
+                  );
+                })}
+            </nav>
+        </section>
+      )}
       {exportOpen && (
         <div className="modal">
           <div className="modal-card">
@@ -2506,6 +2666,22 @@ export default function ResumeEditor() {
           </div>
         </div>
       )}
+      {showTemplatePromptModal && (
+        <div className="modal" data-testid="template-choice-modal">
+          <div className="modal-card">
+            <div className="modal-header">
+              <div>
+                <h3 style={{ margin: 0 }}>Resume saved</h3>
+                <p className="small">Do you want to choose template now?</p>
+              </div>
+            </div>
+            <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button className="btn secondary" onClick={handleTemplatePromptClose}>Not now</button>
+              <button className="btn" onClick={handleTemplatePromptConfirm} disabled={!templatePromptHref}>OK</button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
@@ -2538,308 +2714,6 @@ function SectionBadge({ level, text }: { level: FeedbackLevel; text: string }) {
   );
 }
 
-function TemplatePreview({
-  templateId,
-  resume,
-  compact = false,
-  accentOverride,
-  fontOverride,
-  spacing = 'normal',
-}: {
-  templateId: TemplateId | string;
-  resume: ResumeImportResult;
-  compact?: boolean;
-  accentOverride?: string;
-  fontOverride?: string;
-  spacing?: 'compact' | 'normal' | 'airy';
-}) {
-  const config = templates.find((t) => t.id === templateId) || templates[0];
-  const accent = accentOverride || config.accent;
-  const fontFamily = fontOverride && fontOverride !== 'template'
-    ? `"${fontOverride}", ${config.fontFamily}`
-    : config.fontFamily;
-  const spacingClass = `spacing-${spacing}`;
-  if (templateId === 'student') {
-    return <StudentTemplate resume={resume} compact={compact} accent={accent} fontFamily={fontFamily} spacingClass={spacingClass} />;
-  }
-  if (templateId === 'senior') {
-    return <SeniorTemplate resume={resume} compact={compact} accent={accent} fontFamily={fontFamily} spacingClass={spacingClass} />;
-  }
-  if (templateId === 'modern') {
-    return <ModernTemplate resume={resume} compact={compact} accent={accent} fontFamily={fontFamily} spacingClass={spacingClass} />;
-  }
-  return <ClassicTemplate resume={resume} compact={compact} accent={accent} fontFamily={fontFamily} spacingClass={spacingClass} />;
-}
-
-function ClassicTemplate({ resume, compact, accent, fontFamily, spacingClass }: { resume: ResumeImportResult; compact: boolean; accent: string; fontFamily: string; spacingClass: string }) {
-  const experience = resume.experience.filter(isPreviewExperience);
-  const education = resume.education.filter(isPreviewEducation);
-  const skills = resume.skills.filter((item) => item.trim().length > 0);
-  return (
-    <div className={`template-doc ${spacingClass} ${compact ? 'compact' : ''}`} style={{ fontFamily, color: '#111' }}>
-      <div className="template-header" style={{ borderBottomColor: accent }}>
-        <div>
-          <strong className="template-title">{resume.title || resume.contact?.fullName || 'Untitled Resume'}</strong>
-          <div className="template-meta">
-            {resume.contact?.email || ''} {resume.contact?.phone || ''} {resume.contact?.location || ''}
-          </div>
-        </div>
-        <div className="template-accent" style={{ background: accent }} />
-      </div>
-      <Section title="Summary" accent={accent} compact={compact}>
-        <p className="small">{resume.summary || 'No summary added yet.'}</p>
-      </Section>
-      <Section title="Skills" accent={accent} compact={compact}>
-        <p className="small">{skills.length ? skills.join(', ') : 'No skills added yet.'}</p>
-      </Section>
-      <Section title="Experience" accent={accent} compact={compact}>
-        {experience.length ? experience.map((exp, idx) => (
-          <div key={`classic-exp-${idx}`} className="template-item">
-            <div className="template-item__head">
-              <strong>{exp.role}</strong>
-              <span>{exp.company}</span>
-              <span className="template-dates">{exp.startDate} - {exp.endDate}</span>
-            </div>
-            <ul className="template-list">
-              {exp.highlights.filter(Boolean).slice(0, compact ? 1 : 3).map((h, hIdx) => (
-                <li key={`classic-exp-h-${hIdx}`} className="small">{h}</li>
-              ))}
-            </ul>
-          </div>
-        )) : <p className="small template-empty">No experience added yet.</p>}
-      </Section>
-      {resume.projects?.length ? (
-        <Section title="Projects" accent={accent} compact={compact}>
-          {resume.projects.map((proj, idx) => (
-            <div key={`classic-proj-${idx}`} className="small">{proj.name}</div>
-          ))}
-        </Section>
-      ) : null}
-      {resume.certifications?.length ? (
-        <Section title="Certifications" accent={accent} compact={compact}>
-          {resume.certifications.map((cert, idx) => (
-            <div key={`classic-cert-${idx}`} className="small">{cert.name}</div>
-          ))}
-        </Section>
-      ) : null}
-      <Section title="Education" accent={accent} compact={compact}>
-        {education.length ? education.map((edu, idx) => (
-          <div key={`classic-edu-${idx}`} className="small">
-            {edu.degree} - {edu.institution}
-          </div>
-        )) : <p className="small template-empty">No education added yet.</p>}
-      </Section>
-    </div>
-  );
-}
-
-function ModernTemplate({ resume, compact, accent, fontFamily, spacingClass }: { resume: ResumeImportResult; compact: boolean; accent: string; fontFamily: string; spacingClass: string }) {
-  const experience = resume.experience.filter(isPreviewExperience);
-  const education = resume.education.filter(isPreviewEducation);
-  const skills = resume.skills.filter((item) => item.trim().length > 0);
-  return (
-    <div className={`template-doc modern ${spacingClass} ${compact ? 'compact' : ''}`} style={{ fontFamily, color: '#111' }}>
-      <div className="template-header modern" style={{ borderBottomColor: accent }}>
-        <div>
-          <strong className="template-title">{resume.title || resume.contact?.fullName || 'Untitled Resume'}</strong>
-          <div className="template-meta">
-            {(resume.contact?.email || '')}{resume.contact?.email && resume.contact?.phone ? ' | ' : ''}
-            {(resume.contact?.phone || '')}
-          </div>
-        </div>
-        <div className="template-meta">{resume.contact?.location || ''}</div>
-      </div>
-      <div className="template-columns">
-        <div>
-          <Section title="Summary" accent={accent} compact={compact}>
-            <p className="small">{resume.summary || 'No summary added yet.'}</p>
-          </Section>
-          <Section title="Experience" accent={accent} compact={compact}>
-            {experience.length ? experience.map((exp, idx) => (
-              <div key={`modern-exp-${idx}`} className="template-item">
-                <div className="template-item__head">
-                  <strong>{exp.role}</strong>
-                  <span>{exp.company}</span>
-                </div>
-                <div className="template-dates">{exp.startDate} - {exp.endDate}</div>
-                <ul className="template-list">
-                  {exp.highlights.filter(Boolean).slice(0, compact ? 1 : 3).map((h, hIdx) => (
-                    <li key={`modern-exp-h-${hIdx}`} className="small">{h}</li>
-                  ))}
-                </ul>
-              </div>
-            )) : <p className="small template-empty">No experience added yet.</p>}
-          </Section>
-        </div>
-        <div>
-          <Section title="Skills" accent={accent} compact={compact}>
-            <div className="template-skill-grid">
-              {skills.slice(0, compact ? 6 : 10).map((skill, idx) => (
-                <span key={`modern-skill-${idx}`} className="template-chip">{skill}</span>
-              ))}
-            </div>
-            {!skills.length && <p className="small template-empty">No skills added yet.</p>}
-          </Section>
-          <Section title="Education" accent={accent} compact={compact}>
-            {education.length ? education.map((edu, idx) => (
-              <div key={`modern-edu-${idx}`} className="small">
-                <strong>{edu.degree}</strong>
-                <div>{edu.institution}</div>
-              </div>
-            )) : <p className="small template-empty">No education added yet.</p>}
-          </Section>
-          {resume.projects?.length ? (
-            <Section title="Projects" accent={accent} compact={compact}>
-              {resume.projects.map((proj, idx) => (
-                <div key={`modern-proj-${idx}`} className="small">{proj.name}</div>
-              ))}
-            </Section>
-          ) : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function StudentTemplate({ resume, compact, accent, fontFamily, spacingClass }: { resume: ResumeImportResult; compact: boolean; accent: string; fontFamily: string; spacingClass: string }) {
-  const experience = resume.experience.filter(isPreviewExperience);
-  const education = resume.education.filter(isPreviewEducation);
-  const skills = resume.skills.filter((item) => item.trim().length > 0);
-  return (
-    <div className={`template-doc student ${spacingClass} ${compact ? 'compact' : ''}`} style={{ fontFamily, color: '#111' }}>
-      <div className="template-header student" style={{ borderBottomColor: accent }}>
-        <strong className="template-title">{resume.title || resume.contact?.fullName || 'Untitled Resume'}</strong>
-        <div className="template-meta">{resume.contact?.email || ''} {resume.contact?.phone || ''}</div>
-      </div>
-      <Section title="Projects" accent={accent} compact={compact}>
-        {resume.projects?.length ? resume.projects.map((proj, idx) => (
-          <div key={`student-proj-${idx}`} className="template-item">
-            <div className="template-item__head">
-              <strong>{proj.name || 'Project'}</strong>
-              <span className="template-dates">{proj.startDate || ''} {proj.endDate ? `- ${proj.endDate}` : ''}</span>
-            </div>
-            <ul className="template-list">
-              {proj.highlights.filter(Boolean).slice(0, compact ? 1 : 3).map((h, hIdx) => (
-                <li key={`student-proj-h-${hIdx}`} className="small">{h}</li>
-              ))}
-            </ul>
-          </div>
-        )) : <p className="small">Add projects to highlight your work.</p>}
-      </Section>
-      <Section title="Skills" accent={accent} compact={compact}>
-        <p className="small">{skills.length ? skills.join(', ') : 'No skills added yet.'}</p>
-      </Section>
-      <Section title="Experience" accent={accent} compact={compact}>
-        {experience.length ? experience.map((exp, idx) => (
-          <div key={`student-exp-${idx}`} className="template-item">
-            <div className="template-item__head">
-              <strong>{exp.role}</strong>
-              <span>{exp.company}</span>
-            </div>
-            <ul className="template-list">
-              {exp.highlights.filter(Boolean).slice(0, compact ? 1 : 2).map((h, hIdx) => (
-                <li key={`student-exp-h-${hIdx}`} className="small">{h}</li>
-              ))}
-            </ul>
-          </div>
-        )) : <p className="small template-empty">No experience added yet.</p>}
-      </Section>
-      <Section title="Education" accent={accent} compact={compact}>
-        {education.length ? education.map((edu, idx) => (
-          <div key={`student-edu-${idx}`} className="small">
-            {edu.degree} - {edu.institution}
-          </div>
-        )) : <p className="small template-empty">No education added yet.</p>}
-      </Section>
-    </div>
-  );
-}
-
-function SeniorTemplate({ resume, compact, accent, fontFamily, spacingClass }: { resume: ResumeImportResult; compact: boolean; accent: string; fontFamily: string; spacingClass: string }) {
-  const experience = resume.experience.filter(isPreviewExperience);
-  const education = resume.education.filter(isPreviewEducation);
-  const skills = resume.skills.filter((item) => item.trim().length > 0);
-  return (
-    <div className={`template-doc senior ${spacingClass} ${compact ? 'compact' : ''}`} style={{ fontFamily, color: '#111' }}>
-      <div className="template-header senior" style={{ borderBottomColor: accent }}>
-        <div>
-          <strong className="template-title">{resume.title || resume.contact?.fullName || 'Untitled Resume'}</strong>
-          <div className="template-meta">{resume.contact?.email || ''} {resume.contact?.phone || ''}</div>
-        </div>
-        <div className="template-meta">{resume.contact?.location || ''}</div>
-      </div>
-      <Section title="Executive Summary" accent={accent} compact={compact}>
-        <p className="small">{resume.summary || 'No summary added yet.'}</p>
-      </Section>
-      <Section title="Leadership & Impact" accent={accent} compact={compact}>
-        {experience.length ? experience.map((exp, idx) => (
-          <div key={`senior-exp-${idx}`} className="template-item">
-            <div className="template-item__head">
-              <strong>{exp.role}</strong>
-              <span>{exp.company}</span>
-              <span className="template-dates">{exp.startDate} - {exp.endDate}</span>
-            </div>
-            <ul className="template-list">
-              {exp.highlights.filter(Boolean).slice(0, compact ? 1 : 3).map((h, hIdx) => (
-                <li key={`senior-exp-h-${hIdx}`} className="small">{h}</li>
-              ))}
-            </ul>
-          </div>
-        )) : <p className="small template-empty">No experience added yet.</p>}
-      </Section>
-      <div className="template-columns">
-        <Section title="Core Skills" accent={accent} compact={compact}>
-          <div className="template-skill-grid">
-            {skills.slice(0, compact ? 6 : 12).map((skill, idx) => (
-              <span key={`senior-skill-${idx}`} className="template-chip">{skill}</span>
-            ))}
-          </div>
-          {!skills.length && <p className="small template-empty">No skills added yet.</p>}
-        </Section>
-        <Section title="Education" accent={accent} compact={compact}>
-          {education.length ? education.map((edu, idx) => (
-            <div key={`senior-edu-${idx}`} className="small">
-              {edu.degree} - {edu.institution}
-            </div>
-          )) : <p className="small template-empty">No education added yet.</p>}
-        </Section>
-      </div>
-      {resume.certifications?.length ? (
-        <Section title="Certifications" accent={accent} compact={compact}>
-          {resume.certifications.map((cert, idx) => (
-            <div key={`senior-cert-${idx}`} className="small">{cert.name}</div>
-          ))}
-        </Section>
-      ) : null}
-    </div>
-  );
-}
-
-function Section({ title, accent, compact, children }: { title: string; accent: string; compact: boolean; children: ReactNode }) {
-  return (
-    <div className={`template-section ${compact ? 'compact' : ''}`}>
-      <div className="template-section__title" style={{ color: accent }}>{title}</div>
-      {children}
-    </div>
-  );
-}
-
-function isPreviewExperience(item: ExperienceItem) {
-  return Boolean(item.company || item.role || item.startDate || item.endDate || item.highlights.length);
-}
-
-function isPreviewEducation(item: EducationItem) {
-  return Boolean(
-    item.institution ||
-    item.degree ||
-    item.startDate ||
-    item.endDate ||
-    (item.details || []).length ||
-    item.gpa != null ||
-    item.percentage != null,
-  );
-}
-
 function sanitizeContact(contact: ContactInfo): ContactInfo {
   const fullName = contact.fullName?.trim() || '';
   const email = contact.email?.trim() || undefined;
@@ -2855,9 +2729,72 @@ function sanitizeContact(contact: ContactInfo): ContactInfo {
   };
 }
 
+export function buildSectionMetaMap(trackedSections: Array<{ type: SectionType; element: Element }>) {
+  const map = new Map<Element, { type: SectionType; order: number }>();
+  trackedSections.forEach(({ type, element }, index) => {
+    map.set(element, { type, order: index });
+  });
+  return map;
+}
+
+export function getActiveSectionFromObserverEntries(
+  entries: IntersectionObserverEntry[],
+  sectionMeta: Map<Element, { type: SectionType; order: number }>,
+) {
+  let best: { type: SectionType; ratio: number; order: number } | null = null;
+  for (const entry of entries) {
+    if (!entry.isIntersecting) continue;
+    const meta = sectionMeta.get(entry.target);
+    if (!meta) continue;
+    if (
+      !best ||
+      entry.intersectionRatio > best.ratio ||
+      (entry.intersectionRatio === best.ratio && meta.order < best.order)
+    ) {
+      best = { type: meta.type, ratio: entry.intersectionRatio, order: meta.order };
+    }
+  }
+  return best ? best.type : null;
+}
+
+export function getSectionKeyFromNode(node: HTMLElement | null): SectionType | null {
+  let cursor: HTMLElement | null = node;
+  while (cursor) {
+    const dataAttr = cursor.getAttribute('data-section-id');
+    if (dataAttr && SECTION_KEYS.includes(dataAttr as SectionType)) {
+      return dataAttr as SectionType;
+    }
+    const id = cursor.id;
+    if (id && id.startsWith(SECTION_ID_PREFIX)) {
+      const candidate = id.slice(SECTION_ID_PREFIX.length) as SectionType;
+      if (SECTION_KEYS.includes(candidate)) {
+        return candidate;
+      }
+    }
+    cursor = cursor.parentElement;
+  }
+  return null;
+}
+
+export function getSectionNavItemClass(type: SectionType, activeSectionId: SectionType, enabled: boolean) {
+  return `section-navigator__item${activeSectionId === type ? ' active' : ''}${!enabled ? ' disabled' : ''}`;
+}
+
+export function shouldRespectEditingOverride(
+  editingSection: SectionType | null,
+  lastFocusTs: number,
+  overrideDurationMs: number,
+  activeElementInsideEditor: boolean,
+  now = Date.now(),
+) {
+  if (!editingSection) return false;
+  if (!activeElementInsideEditor) return false;
+  return now - lastFocusTs < overrideDurationMs;
+}
+
 function scrollToSection(type: SectionType) {
   if (typeof window === 'undefined') return;
-  const el = document.getElementById(`editor-section-${type}`);
+  const el = document.getElementById(`resume-section-${type}`);
   if (!el) return;
   el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -3187,7 +3124,7 @@ function validateResumeDraft(resume: ResumeDraft, sections: SectionState[]) {
     const experienceValidation = validateExperienceEntries(normalizedExperience as any);
     const strictErrors = experienceValidation.hasErrors;
     const bullets = normalizedExperience.flatMap((e) => e.highlights).filter(Boolean);
-    const tooLong = bullets.filter((b) => wordCount(b) > 28);
+    const tooLong = bullets.filter((b) => countWords(b) > BULLET_WORD_LIMIT);
     const hasMetric = bullets.some((b) => /\d/.test(b));
     if (strictErrors) {
       sectionFeedback.experience = { level: 'error', text: 'Fix experience dates and required role/company fields.' };
@@ -3267,8 +3204,44 @@ function buildActionVerbEntries(experience: ExperienceItem[]): ExperienceBulletE
   );
 }
 
-function wordCount(text: string) {
+export function countWords(text: string) {
   return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+export function shouldShowBulletLengthWarning(message: string | null | undefined) {
+  return Boolean(message && message.trim() === BULLET_LENGTH_WARNING);
+}
+
+export function getHighlightLengthState(line: string, warningActive: boolean) {
+  const words = countWords(line);
+  const isTooLong = words > BULLET_WORD_LIMIT;
+  const showError = warningActive && isTooLong;
+  return {
+    words,
+    isTooLong,
+    showError,
+    helperText: showError ? `Too long: ${words} words (max ${BULLET_WORD_LIMIT}).` : '',
+  };
+}
+
+export function findFirstTooLongHighlight(experience: ExperienceItem[]) {
+  for (let expIndex = 0; expIndex < experience.length; expIndex++) {
+    const highlights = experience[expIndex].highlights || [];
+    for (let highlightIndex = 0; highlightIndex < highlights.length; highlightIndex++) {
+      if (countWords(highlights[highlightIndex] || '') > BULLET_WORD_LIMIT) {
+        return { expIndex, highlightIndex };
+      }
+    }
+  }
+  return null;
+}
+
+export function focusHighlightById(highlightId: string | null) {
+  if (!highlightId || typeof document === 'undefined') return false;
+  const element = document.querySelector(`[data-highlight-id="${highlightId}"]`) as HTMLElement | null;
+  if (!element || typeof element.scrollIntoView !== 'function') return false;
+  element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  return true;
 }
 
 function detectQuotaState(error: unknown) {

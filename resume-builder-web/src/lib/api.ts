@@ -88,7 +88,10 @@ type ResumePayload = {
     date?: string;
     details?: string[];
   }[];
+  templateId?: string;
 };
+
+type ResumeUpdatePayload = Partial<ResumePayload>;
 
 type RefreshPayload = { userId: string; refreshToken: string };
 type IngestResumeResponse = {
@@ -115,9 +118,14 @@ type MetaSuggestResponse = {
 export type AdminSettingsResponse = {
   flags: {
     resumeCreationRateLimitEnabled: boolean;
+    paymentFeatureEnabled: boolean;
   };
   updatedAt: string | null;
   forcedDisabled: boolean;
+};
+
+export type FeatureFlagsResponse = {
+  paymentFeatureEnabled: boolean;
 };
 
 export type ApiFieldError = {
@@ -455,6 +463,8 @@ export const api = {
     clearAuthTokens();
   },
 
+  getFeatureFlags: () => request<FeatureFlagsResponse>('/settings/public'),
+
   listResumes: () => request<Resume[]>('/resumes'),
 
   getResume: (id: string) => request<Resume>(`/resumes/${id}`),
@@ -465,7 +475,7 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
-  updateResume: (id: string, payload: ResumePayload) =>
+  updateResume: (id: string, payload: ResumeUpdatePayload) =>
     request<Resume>(`/resumes/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(payload),
@@ -551,6 +561,12 @@ export const api = {
     request<AdminSettingsResponse>('/admin/settings/rate-limit', {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
+    }),
+
+  setPaymentFeatureEnabled: (enabled: boolean) =>
+    request<AdminSettingsResponse>('/admin/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ paymentFeatureEnabled: enabled }),
     }),
 
   downloadPdf: async (id: string) => {

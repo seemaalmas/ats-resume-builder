@@ -13,8 +13,6 @@ const { SettingsService } = require('../dist/settings/settings.service.js');
 const { PrismaService } = require('../dist/prisma/prisma.service.js');
 const { JwtAuthGuard } = require('../dist/auth/jwt-auth.guard.js');
 
-const RATE_LIMIT_SETTING_KEY = 'RESUME_CREATION_RATE_LIMIT_ENABLED';
-
 JwtAuthGuard.prototype.canActivate = function canActivate() {
   return true;
 };
@@ -54,6 +52,8 @@ function buildResumePayload(title) {
   };
 }
 
+const APP_SETTING_ID = 'app-settings';
+
 function createPrisma(userId, options = {}) {
   const state = {
     user: {
@@ -74,16 +74,13 @@ function createPrisma(userId, options = {}) {
       stripeCurrentPeriodEnd: null,
     },
     resumes: [],
-    settings: new Map(),
-  };
-
-  if (typeof options.rateLimitEnabled === 'boolean') {
-    state.settings.set(RATE_LIMIT_SETTING_KEY, {
-      key: RATE_LIMIT_SETTING_KEY,
-      value: String(options.rateLimitEnabled),
+    appSetting: {
+      id: APP_SETTING_ID,
+      rateLimitEnabled: typeof options.rateLimitEnabled === 'boolean' ? options.rateLimitEnabled : true,
+      paymentFeatureEnabled: true,
       updatedAt: new Date('2026-02-01T00:00:00.000Z'),
-    });
-  }
+    },
+  };
 
   return {
     user: {
@@ -130,27 +127,28 @@ function createPrisma(userId, options = {}) {
     },
     appSetting: {
       findUnique: async ({ where }) => {
-        const row = state.settings.get(where.key);
-        return row ? { ...row } : null;
+        if (where.id === state.appSetting.id) {
+          return { ...state.appSetting };
+        }
+        return null;
       },
       upsert: async ({ where, create, update }) => {
-        const existing = state.settings.get(where.key);
-        if (existing) {
-          const next = {
-            ...existing,
-            ...(update || {}),
+        if (state.appSetting.id !== where.id) {
+          state.appSetting = {
+            id: create.id,
+            rateLimitEnabled: create.rateLimitEnabled,
+            paymentFeatureEnabled: create.paymentFeatureEnabled ?? false,
+            createdAt: new Date(),
             updatedAt: new Date(),
           };
-          state.settings.set(where.key, next);
-          return { ...next };
+          return { ...state.appSetting };
         }
-        const created = {
-          key: create.key,
-          value: create.value,
+        state.appSetting = {
+          ...state.appSetting,
+          ...(update || {}),
           updatedAt: new Date(),
         };
-        state.settings.set(create.key, created);
-        return { ...created };
+        return { ...state.appSetting };
       },
     },
     __getState: () => state,
@@ -204,7 +202,7 @@ test('rate limiter is bypassed when rate-limit flag is disabled in settings', as
   await withEnv(
     {
       FORCE_DISABLE_RATE_LIMIT: undefined,
-      RESUME_CREATION_RATE_LIMIT_DEFAULT: undefined,
+      RESUME_CREATION_RATE_LIMIT_DEFAULT: 'false',
       NODE_ENV: 'production',
     },
     async () => {
@@ -230,7 +228,7 @@ test('rate limiter blocks when rate-limit flag is enabled and returns code', asy
   await withEnv(
     {
       FORCE_DISABLE_RATE_LIMIT: undefined,
-      RESUME_CREATION_RATE_LIMIT_DEFAULT: undefined,
+      RESUME_CREATION_RATE_LIMIT_DEFAULT: 'true',
       NODE_ENV: 'production',
     },
     async () => {
@@ -261,7 +259,7 @@ test('rate limiter allows requests within configured limit when enabled', async 
   await withEnv(
     {
       FORCE_DISABLE_RATE_LIMIT: undefined,
-      RESUME_CREATION_RATE_LIMIT_DEFAULT: undefined,
+      RESUME_CREATION_RATE_LIMIT_DEFAULT: 'true',
       NODE_ENV: 'production',
     },
     async () => {
