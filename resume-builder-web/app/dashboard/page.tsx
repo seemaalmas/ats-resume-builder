@@ -46,10 +46,10 @@ export default function DashboardPage() {
   };
 
   return (
-    <main className="grid">
-      {/* ── Resume header (shown when user has resumes) ── */}
+    <main style={{ width: '90vw', maxWidth: 'none', margin: '0 auto', padding: 24 }}>
+      {/* ── Resume header ── */}
       {previewResume && (
-        <section className="col-12" style={{ marginBottom: 4 }}>
+        <header style={{ marginBottom: 16 }}>
           <h2 style={{ margin: 0 }}>{previewResume.title}</h2>
           <p className="small" style={{ margin: 0 }}>
             Created: {new Date(previewResume.createdAt).toLocaleDateString()}
@@ -57,19 +57,19 @@ export default function DashboardPage() {
             Last Edited: {new Date(previewResume.updatedAt).toLocaleDateString()}{' '}
             {new Date(previewResume.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </p>
-        </section>
+        </header>
       )}
 
-      {/* ── Template gallery grid (primary content — 4 columns) ── */}
-      <section className="col-12" data-testid="dashboard-template-section">
+      {message && <p className="small">{message}</p>}
+
+      {/* ── Template gallery grid — primary / default dashboard view ── */}
+      <section data-testid="dashboard-template-section">
         <div
-          className="template-grid"
           data-testid="dashboard-template-grid"
           style={{
             display: 'grid',
             gridTemplateColumns: 'repeat(4, 1fr)',
-            gap: '20px',
-            marginTop: 8,
+            gap: 20,
           }}
         >
           {templates.map((t) => (
@@ -81,60 +81,51 @@ export default function DashboardPage() {
               onMouseEnter={() => setHoveredTemplate(t.id)}
               onMouseLeave={() => setHoveredTemplate('')}
               onClick={() => handleTemplateClick(t.id)}
-              style={{ padding: 0, borderRadius: 12, overflow: 'hidden' }}
+              style={{
+                padding: 0,
+                borderRadius: 12,
+                overflow: 'hidden',
+                display: 'flex',
+                flexDirection: 'column',
+              }}
             >
               <div
-                className="template-card__preview"
                 style={{
-                  height: 'auto',
-                  minHeight: 320,
+                  flex: 1,
+                  minHeight: 380,
                   overflow: 'hidden',
-                  padding: 0,
                   background: '#fff',
-                  borderRadius: 0,
-                  border: 'none',
+                  position: 'relative',
                 }}
               >
-                {previewData ? (
-                  <div style={{ transform: 'scale(0.48)', transformOrigin: 'top left', width: '208%' }}>
-                    <TemplatePreview
-                      templateId={t.id}
-                      resume={previewData}
-                    />
-                  </div>
-                ) : (
-                  <div style={{ padding: 16 }}>
-                    <div style={{ transform: 'scale(0.48)', transformOrigin: 'top left', width: '208%' }}>
-                      <TemplatePreview
-                        templateId={t.id}
-                        resume={{
-                          title: 'Your Resume Title',
-                          summary: 'Your professional summary will appear here once you create a resume.',
-                          skills: ['Skill 1', 'Skill 2', 'Skill 3'],
-                          experience: [],
-                          education: [],
-                          projects: [],
-                          certifications: [],
-                          contact: { fullName: 'Your Name', email: 'email@example.com', phone: '', location: '' },
-                        }}
-                        compact
-                      />
-                    </div>
-                  </div>
-                )}
+                <div style={{ transform: 'scale(0.42)', transformOrigin: 'top left', width: '238%' }}>
+                  <TemplatePreview
+                    templateId={t.id}
+                    resume={previewData ?? {
+                      title: 'Your Resume Title',
+                      summary: 'Your professional summary will appear here.',
+                      skills: ['Skill 1', 'Skill 2', 'Skill 3'],
+                      experience: [],
+                      education: [],
+                      projects: [],
+                      certifications: [],
+                      contact: { fullName: 'Your Name', email: 'email@example.com', phone: '', location: '' },
+                    }}
+                  />
+                </div>
               </div>
               <div
-                className="template-card__meta"
                 style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
                   padding: '10px 14px',
                   borderTop: '1px solid #efe4d9',
                   background: '#faf8f5',
                 }}
               >
-                <div style={{ textAlign: 'left' }}>
-                  <strong>{t.name}</strong>
-                </div>
-                <span className="small" style={{ color: '#777', whiteSpace: 'nowrap' }}>
+                <strong style={{ fontSize: 14 }}>{t.name}</strong>
+                <span style={{ color: '#777', fontSize: 12, whiteSpace: 'nowrap' }}>
                   Available in PDF
                 </span>
               </div>
@@ -143,91 +134,86 @@ export default function DashboardPage() {
         </div>
       </section>
 
-      {/* ── Your resumes list ── */}
-      <section className="card col-7">
-        <div className="dashboard-header">
-          <div>
-            <h2>Your resumes</h2>
-            <p className="small">Create, duplicate, and manage all versions in one place.</p>
+      {/* ── Your resumes (collapsible, below the template grid) ── */}
+      {resumes.length > 0 && (
+        <details style={{ marginTop: 32 }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 18, marginBottom: 12 }}>
+            Your resumes ({resumes.length})
+          </summary>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
+            <Link className="btn" href={`/resume/start${templateQuery}`}>Create new</Link>
           </div>
-          <Link className="btn" href={`/resume/start${templateQuery}`}>Create new</Link>
-        </div>
-        {message && <p className="small">{message}</p>}
-        <div className="resume-grid">
-          {resumes.map((r) => (
-            <div key={r.id} className="card resume-card">
-              <div className="resume-thumb">
-                <DashboardResumeThumb templateId={activeTemplate} resume={r} />
-              </div>
-              <div className="resume-card__meta">
-                {renamingId === r.id ? (
-                  <div className="rename-row">
-                    <input
-                      className="input"
-                      value={renameValue}
-                      onChange={(e) => setRenameValue(e.target.value)}
-                      onKeyDown={async (e) => {
-                        if (e.key === 'Enter') {
-                          const updated = await api.updateResume(r.id, {
-                            title: renameValue,
-                            summary: r.summary,
-                            skills: r.skills,
-                            experience: r.experience,
-                            education: r.education,
-                            projects: r.projects,
-                            certifications: r.certifications,
-                            contact: r.contact,
-                          });
-                          setResumes((prev) => prev.map((item) => (item.id === r.id ? updated : item)));
-                          setRenamingId(null);
-                        }
-                      }}
-                    />
-                    <button className="btn secondary" onClick={() => setRenamingId(null)}>Cancel</button>
-                  </div>
-                ) : (
-                  <div className="resume-title-row">
-                    <strong>{r.title}</strong>
+          <div className="resume-grid">
+            {resumes.map((r) => (
+              <div key={r.id} className="card resume-card">
+                <div className="resume-thumb">
+                  <DashboardResumeThumb templateId={activeTemplate} resume={r} />
+                </div>
+                <div className="resume-card__meta">
+                  {renamingId === r.id ? (
+                    <div className="rename-row">
+                      <input
+                        className="input"
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={async (e) => {
+                          if (e.key === 'Enter') {
+                            const updated = await api.updateResume(r.id, {
+                              title: renameValue,
+                              summary: r.summary,
+                              skills: r.skills,
+                              experience: r.experience,
+                              education: r.education,
+                              projects: r.projects,
+                              certifications: r.certifications,
+                              contact: r.contact,
+                            });
+                            setResumes((prev) => prev.map((item) => (item.id === r.id ? updated : item)));
+                            setRenamingId(null);
+                          }
+                        }}
+                      />
+                      <button className="btn secondary" onClick={() => setRenamingId(null)}>Cancel</button>
+                    </div>
+                  ) : (
+                    <div className="resume-title-row">
+                      <strong>{r.title}</strong>
+                      <button
+                        className="btn secondary"
+                        onClick={() => {
+                          setRenamingId(r.id);
+                          setRenameValue(r.title);
+                        }}
+                      >
+                        Rename
+                      </button>
+                    </div>
+                  )}
+                  <p className="small">Updated: {new Date(r.updatedAt).toLocaleDateString()}</p>
+                  <div className="resume-actions">
+                    <Link className="btn" href={`/resume?id=${r.id}`}>Edit</Link>
                     <button
                       className="btn secondary"
-                      onClick={() => {
-                        setRenamingId(r.id);
-                        setRenameValue(r.title);
+                      onClick={async () => {
+                        setDupLoading(r.id);
+                        try {
+                          const copy = await api.duplicateResume(r.id);
+                          setResumes((prev) => [copy, ...prev]);
+                        } finally {
+                          setDupLoading(null);
+                        }
                       }}
+                      disabled={dupLoading === r.id}
                     >
-                      Rename
+                      {dupLoading === r.id ? 'Duplicating...' : 'Duplicate'}
                     </button>
                   </div>
-                )}
-                <p className="small">Updated: {new Date(r.updatedAt).toLocaleDateString()}</p>
-                <div className="resume-actions">
-                  <Link className="btn" href={`/resume?id=${r.id}`}>Edit</Link>
-                  <button
-                    className="btn secondary"
-                    onClick={async () => {
-                      setDupLoading(r.id);
-                      try {
-                        const copy = await api.duplicateResume(r.id);
-                        setResumes((prev) => [copy, ...prev]);
-                      } finally {
-                        setDupLoading(null);
-                      }
-                    }}
-                    disabled={dupLoading === r.id}
-                  >
-                    {dupLoading === r.id ? 'Duplicating...' : 'Duplicate'}
-                  </button>
                 </div>
               </div>
-            </div>
-          ))}
-        </div>
-      </section>
-      <section className="card col-5">
-        <h3>Create new</h3>
-        <p className="small">Start from a clean ATS-safe template.</p>
-        <Link className="btn" href={`/resume/start${templateQuery}`}>New resume</Link>
-      </section>
+            ))}
+          </div>
+        </details>
+      )}
     </main>
   );
 }
