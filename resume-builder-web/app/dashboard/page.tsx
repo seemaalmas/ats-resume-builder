@@ -47,6 +47,103 @@ export default function DashboardPage() {
 
   return (
     <main className="grid">
+      {/* ── Resume header (shown when user has resumes) ── */}
+      {previewResume && (
+        <section className="col-12" style={{ marginBottom: 4 }}>
+          <h2 style={{ margin: 0 }}>{previewResume.title}</h2>
+          <p className="small" style={{ margin: 0 }}>
+            Created: {new Date(previewResume.createdAt).toLocaleDateString()}
+            {'  \u00A0\u00A0  '}
+            Last Edited: {new Date(previewResume.updatedAt).toLocaleDateString()}{' '}
+            {new Date(previewResume.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </p>
+        </section>
+      )}
+
+      {/* ── Template gallery grid (primary content — 4 columns) ── */}
+      <section className="col-12" data-testid="dashboard-template-section">
+        <div
+          className="template-grid"
+          data-testid="dashboard-template-grid"
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(4, 1fr)',
+            gap: '20px',
+            marginTop: 8,
+          }}
+        >
+          {templates.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={`template-card ${t.id === selectedTemplate ? 'active' : ''}`}
+              data-template-id={t.id}
+              onMouseEnter={() => setHoveredTemplate(t.id)}
+              onMouseLeave={() => setHoveredTemplate('')}
+              onClick={() => handleTemplateClick(t.id)}
+              style={{ padding: 0, borderRadius: 12, overflow: 'hidden' }}
+            >
+              <div
+                className="template-card__preview"
+                style={{
+                  height: 'auto',
+                  minHeight: 320,
+                  overflow: 'hidden',
+                  padding: 0,
+                  background: '#fff',
+                  borderRadius: 0,
+                  border: 'none',
+                }}
+              >
+                {previewData ? (
+                  <div style={{ transform: 'scale(0.48)', transformOrigin: 'top left', width: '208%' }}>
+                    <TemplatePreview
+                      templateId={t.id}
+                      resume={previewData}
+                    />
+                  </div>
+                ) : (
+                  <div style={{ padding: 16 }}>
+                    <div style={{ transform: 'scale(0.48)', transformOrigin: 'top left', width: '208%' }}>
+                      <TemplatePreview
+                        templateId={t.id}
+                        resume={{
+                          title: 'Your Resume Title',
+                          summary: 'Your professional summary will appear here once you create a resume.',
+                          skills: ['Skill 1', 'Skill 2', 'Skill 3'],
+                          experience: [],
+                          education: [],
+                          projects: [],
+                          certifications: [],
+                          contact: { fullName: 'Your Name', email: 'email@example.com', phone: '', location: '' },
+                        }}
+                        compact
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div
+                className="template-card__meta"
+                style={{
+                  padding: '10px 14px',
+                  borderTop: '1px solid #efe4d9',
+                  background: '#faf8f5',
+                }}
+              >
+                <div style={{ textAlign: 'left' }}>
+                  <strong>{t.name}</strong>
+                </div>
+                <span className="small" style={{ color: '#777', whiteSpace: 'nowrap' }}>
+                  Available in PDF
+                </span>
+              </div>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {/* ── Your resumes list ── */}
       <section className="card col-7">
         <div className="dashboard-header">
           <div>
@@ -130,41 +227,6 @@ export default function DashboardPage() {
         <h3>Create new</h3>
         <p className="small">Start from a clean ATS-safe template.</p>
         <Link className="btn" href={`/resume/start${templateQuery}`}>New resume</Link>
-      </section>
-
-      <section className="card col-12">
-        <h3>Templates</h3>
-        <p className="small">Pick a template to preview and apply. Click any card to open the full preview experience.</p>
-        <div className="template-grid" data-testid="dashboard-template-grid" style={{ marginTop: 12 }}>
-          {templates.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              className={`template-card ${t.id === selectedTemplate ? 'active' : ''}`}
-              data-template-id={t.id}
-              onMouseEnter={() => setHoveredTemplate(t.id)}
-              onMouseLeave={() => setHoveredTemplate('')}
-              onClick={() => handleTemplateClick(t.id)}
-            >
-              <div className="template-card__preview">
-                {previewData && (
-                  <TemplatePreview
-                    templateId={t.id}
-                    resume={previewData}
-                    compact
-                  />
-                )}
-              </div>
-              <div className="template-card__meta">
-                <div>
-                  <strong>{t.name}</strong>
-                  <div className="small">{t.description}</div>
-                </div>
-                <span className="pill">{t.id === selectedTemplate ? 'Selected' : 'Preview'}</span>
-              </div>
-            </button>
-          ))}
-        </div>
       </section>
     </main>
   );
