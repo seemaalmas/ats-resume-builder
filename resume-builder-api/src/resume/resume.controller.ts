@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Req, Res, UploadedFile, UseFilters, UseGuards, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, HttpCode, NotFoundException, Param, Patch, Post, Query, Req, Res, UploadedFile, UseFilters, UseGuards, UseInterceptors } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ResumeService } from './resume.service';
@@ -118,12 +118,44 @@ export class ResumeController {
   async pdf(
     @Req() req: { user: { userId: string } },
     @Param('id') id: string,
+    @Query('templateId') templateId: string | undefined,
+    @Query('debug') debug: string | undefined,
     @Res() res: Response,
   ) {
-    const pdfBuffer = await this.resumeService.generatePdf(req.user.userId, id);
+    if (debug === 'html') {
+      if (process.env.NODE_ENV === 'production') {
+        throw new NotFoundException('Not found');
+      }
+      const rendered = await this.resumeService.debugExportHtml(req.user.userId, id, templateId);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('X-Template-Id', rendered.templateId);
+      res.send(rendered.html);
+      return;
+    }
+    const pdfBuffer = await this.resumeService.generatePdf(req.user.userId, id, templateId);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="resume-${id}.pdf"`);
     res.send(pdfBuffer);
+  }
+
+  @Get('debug/export-html')
+  async debugExportHtml(
+    @Req() req: { user: { userId: string } },
+    @Query('resumeId') resumeId: string | undefined,
+    @Query('templateId') templateId: string | undefined,
+    @Res() res: Response,
+  ) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new NotFoundException('Not found');
+    }
+    const targetResumeId = String(resumeId || '').trim();
+    if (!targetResumeId) {
+      throw new BadRequestException({ errors: [{ path: 'resumeId', message: 'resumeId is required.' }] });
+    }
+    const rendered = await this.resumeService.debugExportHtml(req.user.userId, targetResumeId, templateId);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('X-Template-Id', rendered.templateId);
+    res.send(rendered.html);
   }
 
   @Post('parse-upload')

@@ -13,10 +13,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  validate(payload: { sub: string; email: string; typ?: string }) {
+  validate(payload: { sub: string; email: string; mobile?: string; typ?: string }) {
     if (payload.typ && payload.typ !== 'access') {
       throw new UnauthorizedException('Invalid token type');
     }
-    return { userId: payload.sub, email: payload.email };
+    return { userId: payload.sub, email: payload.email, mobile: payload.mobile };
   }
 }

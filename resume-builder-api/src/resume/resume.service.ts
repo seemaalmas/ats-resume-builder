@@ -352,7 +352,7 @@ export class ResumeService {
     };
   }
 
-  async generatePdf(userId: string, id: string) {
+  async generatePdf(userId: string, id: string, templateIdOverride?: string) {
     rateLimitOrThrow({
       key: `resume:pdf:${userId}`,
       limit: 8,
@@ -376,8 +376,22 @@ export class ResumeService {
       throw new ForbiddenException('PDF export limit exceeded');
     }
     const resume = await this.get(userId, id);
+    // Mismatch root-cause: preview uses React template components + app CSS, while
+    // export used a separate HTML/CSS builder path. Keep export on a single renderer.
+    const resolvedTemplateId = resolveExportTemplateId(templateIdOverride, resume.templateId);
     validatePdfExportSafety(resume, { enforceMinimumScore: paymentFeatureEnabled });
-    const html = renderResumeHtml(resume);
+    const rendered = renderResumeTemplateHtml({
+      templateId: resolvedTemplateId,
+      resumeData: resume,
+      mode: 'export',
+    });
+    const html = rendered.html;
+    logExportRenderMeta({
+      resumeId: id,
+      templateId: resolvedTemplateId,
+      cssIncluded: rendered.cssIncluded,
+      renderer: 'renderResumeTemplateHtml',
+    });
 
     await this.prisma.user.update({
       where: { id: userId },
@@ -393,13 +407,35 @@ export class ResumeService {
       await page.setContent(html, { waitUntil: 'networkidle0' });
       const buffer = await page.pdf({
         format: 'A4',
-        printBackground: false,
+        printBackground: true,
         margin: { top: '20mm', bottom: '20mm', left: '16mm', right: '16mm' },
       });
       return buffer;
     } finally {
       await browser.close();
     }
+  }
+
+  async debugExportHtml(userId: string, id: string, templateIdOverride?: string) {
+    const resume = await this.get(userId, id);
+    const resolvedTemplateId = resolveExportTemplateId(templateIdOverride, resume.templateId);
+    const rendered = renderResumeTemplateHtml({
+      templateId: resolvedTemplateId,
+      resumeData: resume,
+      mode: 'export',
+    });
+    logExportRenderMeta({
+      resumeId: id,
+      templateId: resolvedTemplateId,
+      cssIncluded: rendered.cssIncluded,
+      renderer: 'renderResumeTemplateHtml(debug)',
+    });
+    return {
+      html: rendered.html,
+      fingerprint: rendered.fingerprint,
+      templateId: resolvedTemplateId,
+      cssBundle: rendered.cssBundle,
+    };
   }
 
   async parseResumeUpload(
@@ -1905,141 +1941,581 @@ function detectExperienceLevelFromBlocks(input: {
     throw new BadRequestException({ errors });
   }
 }
-function renderResumeHtml(resume: any): string {
-  const summary = escapeHtml(resume.summary || '');
-  const skills = Array.isArray(resume.skills) ? resume.skills : [];
-  const experience = Array.isArray(resume.experience) ? resume.experience : [];
-  const education = Array.isArray(resume.education) ? resume.education : [];
-  const projects = Array.isArray(resume.projects) ? resume.projects : [];
-  const certifications = Array.isArray(resume.certifications) ? resume.certifications : [];
-  const contact = resume.contact || {};
+type PdfTheme = {
+  fontFamily?: string;
+  spacing?: 'compact' | 'normal' | 'airy';
+  accent?: string;
+};
 
-  const skillsList = skills.map((s: string) => `<li>${escapeHtml(s)}</li>`).join('');
-  const expBlocks = experience
-    .map((e: any) => {
-      const highlights = Array.isArray(e.highlights) ? e.highlights : [];
-      const highlightList = highlights.map((h: string) => `<li>${escapeHtml(h)}</li>`).join('');
-      return `
-        <div class="item">
-          <div class="item-head">
-            <strong>${escapeHtml(e.role || '')}</strong> - ${escapeHtml(e.company || '')}
-            <span class="dates">${escapeHtml(e.startDate || '')} - ${escapeHtml(e.endDate || '')}</span>
-          </div>
-          <ul>${highlightList}</ul>
-        </div>
-      `;
-    })
-    .join('');
+type RenderResumeHtmlInput = {
+  templateId?: string | null;
+  resumeData: any;
+  theme?: PdfTheme;
+};
 
-  const eduBlocks = education
-    .map((e: any) => {
-      const details = Array.isArray(e.details) ? e.details : [];
-      const detailList = details.map((d: string) => `<li>${escapeHtml(d)}</li>`).join('');
-      return `
-        <div class="item">
-          <div class="item-head">
-            <strong>${escapeHtml(e.degree || '')}</strong> - ${escapeHtml(e.institution || '')}
-            <span class="dates">${escapeHtml(e.startDate || '')} - ${escapeHtml(e.endDate || '')}</span>
-          </div>
-          <ul>${detailList}</ul>
-        </div>
-      `;
-    })
-    .join('');
+type RenderContext = 'preview' | 'export';
 
-  const projectBlocks = projects
-    .map((p: any) => {
-      const highlights = Array.isArray(p.highlights) ? p.highlights : [];
-      const highlightList = highlights.map((h: string) => `<li>${escapeHtml(h)}</li>`).join('');
-      return `
-        <div class="item">
-          <div class="item-head">
-            <strong>${escapeHtml(p.name || '')}</strong>
-            <span class="dates">${escapeHtml(p.startDate || '')} - ${escapeHtml(p.endDate || '')}</span>
-          </div>
-          ${p.role ? `<div class="meta">${escapeHtml(p.role)}</div>` : ''}
-          <ul>${highlightList}</ul>
-        </div>
-      `;
-    })
-    .join('');
+type RenderResumeTemplateHtmlInput = {
+  templateId?: string | null;
+  resumeData: any;
+  mode: RenderContext;
+};
 
-  const certBlocks = certifications
-    .map((c: any) => {
-      const details = Array.isArray(c.details) ? c.details : [];
-      const detailList = details.map((d: string) => `<li>${escapeHtml(d)}</li>`).join('');
-      return `
-        <div class="item">
-          <div class="item-head">
-            <strong>${escapeHtml(c.name || '')}</strong>
-            <span class="dates">${escapeHtml(c.date || '')}</span>
-          </div>
-          ${c.issuer ? `<div class="meta">${escapeHtml(c.issuer)}</div>` : ''}
-          ${detailList ? `<ul>${detailList}</ul>` : ''}
-        </div>
-      `;
-    })
-    .join('');
+type RenderResumeTemplateHtmlOutput = {
+  html: string;
+  fingerprint: string;
+  cssBundle: string;
+  cssIncluded: boolean;
+};
 
-  return `
+type TemplateExperienceItem = {
+  role: string;
+  company: string;
+  startDate: string;
+  endDate: string;
+  highlights: string[];
+};
+
+type TemplateEducationItem = {
+  degree: string;
+  institution: string;
+};
+
+type TemplateProjectItem = {
+  name: string;
+  startDate: string;
+  endDate: string;
+  highlights: string[];
+};
+
+const ATS_TEMPLATE_EXPORT_CSS_BUNDLE = 'inline:ats-template-css-v1';
+const ATS_TEMPLATE_EXPORT_CSS = `
+      @page { size: A4; margin: 12mm; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; }
+      body {
+        font-family: "Inter", "Segoe UI", Arial, sans-serif;
+        color: #111;
+        background: #ffffff;
+      }
+      .resume-export-root {
+        width: 100%;
+      }
+      .resume-export-page {
+        width: 100%;
+      }
+      .sr-only-fingerprint {
+        display: none !important;
+      }
+      .ats-template {
+        width: 100%;
+        min-height: 100%;
+        box-sizing: border-box;
+        border: 1px solid #d9e2ec;
+        background: #fff;
+        padding: 18px 20px;
+        color: #111;
+        font-size: 12px;
+        line-height: 1.42;
+      }
+      .ats-template--technical {
+        padding-top: 14px;
+        padding-bottom: 14px;
+        font-size: 11px;
+      }
+      .ats-template__header {
+        border-bottom: 2px solid #111;
+        padding-bottom: 8px;
+        margin-bottom: 12px;
+      }
+      .ats-template__header h1 {
+        margin: 0;
+        font-size: 22px;
+        line-height: 1.2;
+        font-weight: 700;
+      }
+      .ats-template--executive .ats-template__header h1 {
+        font-size: 27px;
+        letter-spacing: 0.3px;
+      }
+      .ats-template__header p {
+        margin: 4px 0 0;
+        color: #39495e;
+        font-size: 11px;
+      }
+      .ats-template__header--bar {
+        border-bottom-color: #2b3a55;
+        border-bottom-width: 3px;
+      }
+      .ats-section {
+        margin-top: 12px;
+        break-inside: auto;
+        page-break-inside: auto;
+      }
+      .ats-section--tight {
+        margin-top: 8px;
+      }
+      .ats-section--divided {
+        border-bottom: 1px solid #dce5ef;
+        padding-bottom: 8px;
+      }
+      .ats-section h2 {
+        margin: 0 0 6px;
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #1a2f45;
+      }
+      .ats-section h2.ats-upper {
+        letter-spacing: 0.12em;
+      }
+      .ats-section p {
+        margin: 0;
+      }
+      .ats-item {
+        margin-top: 8px;
+        page-break-inside: avoid;
+      }
+      .ats-item h3 {
+        margin: 0;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .ats-item p {
+        margin: 2px 0 0;
+      }
+      .ats-item__meta {
+        color: #4b5d74;
+        font-size: 11px;
+      }
+      .ats-item ul {
+        margin: 5px 0 0 18px;
+        padding: 0;
+      }
+      .ats-item li {
+        margin: 2px 0;
+      }
+      .ats-list--impact li {
+        list-style-type: square;
+      }
+`;
+
+export function renderResumeTemplateHtml(input: RenderResumeTemplateHtmlInput): RenderResumeTemplateHtmlOutput {
+  const resume = input?.resumeData || {};
+  const templateId = resolveExportTemplateId(input?.templateId, resume?.templateId);
+  const fingerprint = `TEMPLATE_FINGERPRINT:${templateId}`;
+  const title = escapeHtml(templateFullNameOrTitle(resume));
+  const body = renderTemplateBody(templateId, resume);
+  const mode = input.mode;
+  const html = `
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>${escapeHtml(resume.title || 'Resume')}</title>
-    <style>
-      body { font-family: Arial, Helvetica, sans-serif; color: #111; font-size: 11pt; line-height: 1.4; }
-      h1, h2 { margin: 0 0 6px 0; }
-      h2 { font-size: 12pt; margin-top: 14px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
-      .contact { margin-top: 4px; font-size: 10pt; color: #333; }
-      .meta { font-size: 10pt; color: #333; margin-top: 2px; }
-      .section { margin-top: 12px; }
-      .item { margin-top: 8px; }
-      .item-head { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; }
-      .dates { font-weight: 400; }
-      ul { margin: 6px 0 0 16px; padding: 0; }
-      li { margin-bottom: 3px; }
-      .summary { margin-top: 6px; }
-    </style>
+    <title>${title}</title>
+    <style>${ATS_TEMPLATE_EXPORT_CSS}</style>
   </head>
   <body>
-    <h1>${escapeHtml(resume.title || 'Resume')}</h1>
-    <div class="contact">
-      ${escapeHtml(contact.fullName || '')}
-      ${contact.email ? ` | ${escapeHtml(contact.email)}` : ''}
-      ${contact.phone ? ` | ${escapeHtml(contact.phone)}` : ''}
-      ${contact.location ? ` | ${escapeHtml(contact.location)}` : ''}
-      ${Array.isArray(contact.links) ? contact.links.map((l: string) => ` | ${escapeHtml(l)}`).join('') : ''}
+    <div class="resume-export-root" data-template-id="${safeCssClass(templateId)}" data-render-context="${mode}" data-css-bundle="${ATS_TEMPLATE_EXPORT_CSS_BUNDLE}">
+      <span class="sr-only-fingerprint">${fingerprint}</span>
+      <main class="resume-export-page">
+        ${body}
+      </main>
     </div>
-    <div class="section">
-      <h2>Summary</h2>
-      <p class="summary">${summary}</p>
-    </div>
-    <div class="section">
-      <h2>Skills</h2>
-      <ul>${skillsList}</ul>
-    </div>
-    <div class="section">
-      <h2>Experience</h2>
-      ${expBlocks || '<p>No experience listed.</p>'}
-    </div>
-    <div class="section">
-      <h2>Education</h2>
-      ${eduBlocks || '<p>No education listed.</p>'}
-    </div>
-    ${projectBlocks ? `
-    <div class="section">
-      <h2>Projects</h2>
-      ${projectBlocks}
-    </div>` : ''}
-    ${certBlocks ? `
-    <div class="section">
-      <h2>Certifications</h2>
-      ${certBlocks}
-    </div>` : ''}
   </body>
 </html>
 `;
+  return {
+    html,
+    fingerprint,
+    cssBundle: ATS_TEMPLATE_EXPORT_CSS_BUNDLE,
+    cssIncluded: true,
+  };
+}
+
+export function renderResumeHtml(input: RenderResumeHtmlInput): string {
+  return renderResumeTemplateHtml({
+    templateId: input.templateId,
+    resumeData: input.resumeData,
+    mode: 'export',
+  }).html;
+}
+
+function renderTemplateBody(templateId: string, resume: any) {
+  if (templateId === 'modern') return renderModernTemplateArticle(resume);
+  if (templateId === 'executive') return renderExecutiveTemplateArticle(resume);
+  if (templateId === 'technical') return renderTechnicalTemplateArticle(resume);
+  if (templateId === 'graduate') return renderGraduateTemplateArticle(resume);
+  return renderClassicTemplateArticle(resume);
+}
+
+function renderClassicTemplateArticle(resume: any) {
+  const summary = escapeHtml(String(resume.summary || '').trim() || 'Add a short professional summary.');
+  const skills = templateCleanList(resume.skills);
+  const experience = templateExperienceItems(resume);
+  const education = templateEducationItems(resume);
+  return `
+    <article class="ats-template ats-template--classic">
+      ${templateHeader(resume)}
+      <section class="ats-section">
+        <h2>SUMMARY</h2>
+        <p>${summary}</p>
+      </section>
+      <section class="ats-section">
+        <h2>SKILLS</h2>
+        <p>${skills.length ? escapeHtml(skills.join(', ')) : 'Add role-relevant skills.'}</p>
+      </section>
+      <section class="ats-section">
+        <h2>EXPERIENCE</h2>
+        ${experience.length ? experience.map((item: TemplateExperienceItem) => renderRoleBlock(item, ', ')).join('') : '<p>No experience added.</p>'}
+      </section>
+      <section class="ats-section">
+        <h2>EDUCATION</h2>
+        ${education.length ? education.map((item: TemplateEducationItem) => renderEducationBlock(item)).join('') : '<p>No education added.</p>'}
+      </section>
+    </article>
+  `;
+}
+
+function renderModernTemplateArticle(resume: any) {
+  const summary = escapeHtml(String(resume.summary || '').trim() || 'Add a concise summary focused on role fit and impact.');
+  const skills = templateCleanList(resume.skills);
+  const experience = templateExperienceItems(resume);
+  const education = templateEducationItems(resume);
+  return `
+    <article class="ats-template ats-template--modern">
+      ${templateHeader(resume, { bar: true })}
+      <section class="ats-section ats-section--divided">
+        <h2>Professional Summary</h2>
+        <p>${summary}</p>
+      </section>
+      <section class="ats-section ats-section--divided">
+        <h2>Skills</h2>
+        <p>${skills.length ? escapeHtml(skills.join(', ')) : 'Add role-specific skills.'}</p>
+      </section>
+      <section class="ats-section ats-section--divided">
+        <h2>Experience</h2>
+        ${experience.length ? experience.map((item: TemplateExperienceItem) => renderRoleBlock(item, ' | ')).join('') : '<p>No experience added.</p>'}
+      </section>
+      <section class="ats-section">
+        <h2>Education</h2>
+        ${education.length ? education.map((item: TemplateEducationItem) => renderEducationBlock(item)).join('') : '<p>No education added.</p>'}
+      </section>
+    </article>
+  `;
+}
+
+function renderExecutiveTemplateArticle(resume: any) {
+  const summary = escapeHtml(String(resume.summary || '').trim() || 'Add leadership summary with measurable outcomes.');
+  const skills = templateCleanList(resume.skills);
+  const experience = templateExperienceItems(resume);
+  const education = templateEducationItems(resume);
+  return `
+    <article class="ats-template ats-template--executive">
+      ${templateHeader(resume, { executive: true })}
+      <section class="ats-section">
+        <h2 class="ats-upper">EXECUTIVE SUMMARY</h2>
+        <p>${summary}</p>
+      </section>
+      <section class="ats-section">
+        <h2 class="ats-upper">CORE CAPABILITIES</h2>
+        <p>${skills.length ? escapeHtml(skills.join(', ')) : 'Add strategic and functional capabilities.'}</p>
+      </section>
+      <section class="ats-section">
+        <h2 class="ats-upper">PROFESSIONAL IMPACT</h2>
+        ${experience.length ? experience.map((item: TemplateExperienceItem) => renderRoleBlock(item, ', ', { prefixImpact: true, impactList: true })).join('') : '<p>No experience added.</p>'}
+      </section>
+      <section class="ats-section">
+        <h2 class="ats-upper">EDUCATION</h2>
+        ${education.length ? education.map((item: TemplateEducationItem) => renderEducationBlock(item)).join('') : '<p>No education added.</p>'}
+      </section>
+    </article>
+  `;
+}
+
+function renderTechnicalTemplateArticle(resume: any) {
+  const summary = escapeHtml(String(resume.summary || '').trim() || 'Add a concise technical summary.');
+  const skills = templateCleanList(resume.skills);
+  const technicalSkills = templateCleanList(resume.technicalSkills);
+  const softSkills = templateCleanList(resume.softSkills);
+  const languages = templateCleanList(resume.languages);
+  const groupedSkills = [
+    technicalSkills.length ? `Technical: ${technicalSkills.join(', ')}` : '',
+    softSkills.length ? `Soft: ${softSkills.join(', ')}` : '',
+    skills.length ? `General: ${skills.join(', ')}` : '',
+    languages.length ? `Languages: ${languages.join(', ')}` : '',
+  ].filter(Boolean).join(' | ');
+  const experience = templateExperienceItems(resume);
+  const education = templateEducationItems(resume);
+  return `
+    <article class="ats-template ats-template--technical">
+      ${templateHeader(resume)}
+      <section class="ats-section ats-section--tight">
+        <h2>Summary</h2>
+        <p>${summary}</p>
+      </section>
+      <section class="ats-section ats-section--tight">
+        <h2>Skill Stack</h2>
+        <p>${groupedSkills ? escapeHtml(groupedSkills) : 'Add technical and role-specific skills.'}</p>
+      </section>
+      <section class="ats-section ats-section--tight">
+        <h2>Experience</h2>
+        ${experience.length ? experience.map((item: TemplateExperienceItem) => renderRoleBlock(item, ' @ ')).join('') : '<p>No experience added.</p>'}
+      </section>
+      <section class="ats-section ats-section--tight">
+        <h2>Education</h2>
+        ${education.length ? education.map((item: TemplateEducationItem) => renderEducationBlock(item)).join('') : '<p>No education added.</p>'}
+      </section>
+    </article>
+  `;
+}
+
+function renderGraduateTemplateArticle(resume: any) {
+  const summary = escapeHtml(String(resume.summary || '').trim() || 'Add a short introduction aligned to your target role.');
+  const skills = templateCleanList(resume.skills);
+  const projects = templateProjectItems(resume);
+  const experience = templateExperienceItems(resume);
+  const education = templateEducationItems(resume);
+  return `
+    <article class="ats-template ats-template--graduate">
+      ${templateHeader(resume)}
+      <section class="ats-section">
+        <h2>Summary</h2>
+        <p>${summary}</p>
+      </section>
+      <section class="ats-section">
+        <h2>Education</h2>
+        ${education.length ? education.map((item: TemplateEducationItem) => renderEducationBlock(item)).join('') : '<p>No education added.</p>'}
+      </section>
+      <section class="ats-section">
+        <h2>Projects</h2>
+        ${projects.length ? projects.map((item: TemplateProjectItem) => renderProjectBlock(item)).join('') : '<p>No projects added.</p>'}
+      </section>
+      <section class="ats-section">
+        <h2>Experience</h2>
+        ${experience.length ? experience.map((item: TemplateExperienceItem) => renderRoleBlock(item, ', ')).join('') : '<p>No experience added.</p>'}
+      </section>
+      <section class="ats-section">
+        <h2>Skills</h2>
+        <p>${skills.length ? escapeHtml(skills.join(', ')) : 'Add your strongest skills.'}</p>
+      </section>
+    </article>
+  `;
+}
+
+function templateHeader(resume: any, options?: { bar?: boolean; executive?: boolean }) {
+  const classes = ['ats-template__header'];
+  if (options?.bar) classes.push('ats-template__header--bar');
+  if (options?.executive) classes.push('ats-template__header--executive');
+  const line = templateContactLine(resume);
+  return `
+      <header class="${classes.join(' ')}">
+        <h1>${escapeHtml(templateFullNameOrTitle(resume))}</h1>
+        ${line ? `<p>${escapeHtml(line)}</p>` : ''}
+      </header>
+  `;
+}
+
+function renderRoleBlock(
+  item: { role: string; company: string; startDate: string; endDate: string; highlights: string[] },
+  companyJoiner: ', ' | ' | ' | ' @ ',
+  options?: { prefixImpact?: boolean; impactList?: boolean },
+) {
+  const heading = `${item.role || 'Role'}${item.company ? `${companyJoiner}${item.company}` : ''}`;
+  const lines = templateCleanList(item.highlights).map((line) => (options?.prefixImpact ? `Impact: ${line}` : line));
+  return `
+        <div class="ats-item">
+          <h3>${escapeHtml(heading)}</h3>
+          <p class="ats-item__meta">${escapeHtml(`${item.startDate || ''}${item.endDate ? ` - ${item.endDate}` : ''}`)}</p>
+          <ul${options?.impactList ? ' class="ats-list--impact"' : ''}>
+            ${lines.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}
+          </ul>
+        </div>
+  `;
+}
+
+function renderEducationBlock(item: { degree: string; institution: string }) {
+  return `
+        <div class="ats-item">
+          <h3>${escapeHtml(item.degree || 'Degree')}</h3>
+          <p>${escapeHtml(item.institution || '')}</p>
+        </div>
+  `;
+}
+
+function renderProjectBlock(item: { name: string; startDate: string; endDate: string; highlights: string[] }) {
+  const lines = templateCleanList(item.highlights);
+  return `
+        <div class="ats-item">
+          <h3>${escapeHtml(item.name || 'Project')}</h3>
+          <p class="ats-item__meta">${escapeHtml(`${item.startDate || ''}${item.endDate ? ` - ${item.endDate}` : ''}`)}</p>
+          <ul>
+            ${lines.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}
+          </ul>
+        </div>
+  `;
+}
+
+function templateCleanList(input: unknown) {
+  if (!Array.isArray(input)) return [] as string[];
+  return input.map((item) => String(item || '').trim()).filter(Boolean);
+}
+
+function templateFullNameOrTitle(resume: any) {
+  const title = String(resume?.title || '').trim();
+  const fullName = String(resume?.contact?.fullName || '').trim();
+  return title || fullName || 'Resume';
+}
+
+function templateContactLine(resume: any) {
+  const parts = [
+    resume?.contact?.email,
+    resume?.contact?.phone,
+    resume?.contact?.location,
+    ...(Array.isArray(resume?.contact?.links) ? resume.contact.links : []),
+  ].map((item) => String(item || '').trim()).filter(Boolean);
+  return parts.join(' | ');
+}
+
+function templateExperienceItems(resume: any) {
+  const items = Array.isArray(resume?.experience) ? (resume.experience as Array<Record<string, unknown>>) : [];
+  return items
+    .map((item: Record<string, unknown>): TemplateExperienceItem => ({
+      role: String(item?.role || '').trim(),
+      company: String(item?.company || '').trim(),
+      startDate: String(item?.startDate || '').trim(),
+      endDate: String(item?.endDate || '').trim(),
+      highlights: templateCleanList(item?.highlights),
+    }))
+    .filter((item: TemplateExperienceItem) => Boolean(item.role || item.company || item.highlights.length));
+}
+
+function templateEducationItems(resume: any) {
+  const items = Array.isArray(resume?.education) ? (resume.education as Array<Record<string, unknown>>) : [];
+  return items
+    .map((item: Record<string, unknown>): TemplateEducationItem => ({
+      degree: String(item?.degree || '').trim(),
+      institution: String(item?.institution || '').trim(),
+    }))
+    .filter((item: TemplateEducationItem) => Boolean(item.degree || item.institution));
+}
+
+function templateProjectItems(resume: any) {
+  const items = Array.isArray(resume?.projects) ? (resume.projects as Array<Record<string, unknown>>) : [];
+  return items
+    .map((item: Record<string, unknown>): TemplateProjectItem => ({
+      name: String(item?.name || '').trim(),
+      startDate: String(item?.startDate || '').trim(),
+      endDate: String(item?.endDate || '').trim(),
+      highlights: templateCleanList(item?.highlights),
+    }))
+    .filter((item: TemplateProjectItem) => Boolean(item.name || item.highlights.length));
+}
+
+function normalizeTemplateId(value: unknown) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return 'classic';
+  const aliases: Record<string, string> = {
+    student: 'graduate',
+    senior: 'executive',
+    portfolio: 'executive',
+    product: 'modern',
+    'modern-professional': 'modern',
+    'classic-ats': 'classic',
+    'executive-impact': 'executive',
+    'technical-compact': 'technical',
+    'graduate-starter': 'graduate',
+  };
+  const normalized = aliases[raw] || raw;
+  if (['classic', 'modern', 'executive', 'technical', 'graduate'].includes(normalized)) {
+    return normalized;
+  }
+  return 'classic';
+}
+
+function resolveExportTemplateId(templateIdOverride: unknown, resumeTemplateId: unknown) {
+  const explicitTemplateId = String(templateIdOverride || '').trim();
+  if (explicitTemplateId) return normalizeTemplateId(explicitTemplateId);
+  const storedTemplateId = String(resumeTemplateId || '').trim();
+  if (storedTemplateId) return normalizeTemplateId(storedTemplateId);
+  return 'classic';
+}
+
+function isSingleColumnAtsTemplate(templateId: string) {
+  return ['classic', 'modern', 'executive', 'technical', 'graduate'].includes(templateId);
+}
+
+function resolveTemplateFlavor(templateId: string): 'classic' | 'modern' | 'executive' | 'technical' | 'graduate' {
+  if (templateId === 'modern') return 'modern';
+  if (['executive', 'senior', 'portfolio'].includes(templateId)) return 'executive';
+  if (templateId === 'technical') return 'technical';
+  if (['graduate', 'student'].includes(templateId)) return 'graduate';
+  return 'classic';
+}
+
+function resolveTemplateLayout(templateId: string): 'single' | 'two-column' | 'timeline' {
+  if (templateId === 'modern-timeline') return 'timeline';
+  if (['student', 'product', 'modern-two-column', 'accent-sidebar'].includes(templateId)) {
+    return 'two-column';
+  }
+  return 'single';
+}
+
+function resolveTemplateAccent(templateId: string) {
+  const palette: Record<string, string> = {
+    classic: '#111111',
+    modern: '#2b3a55',
+    student: '#2f7a5d',
+    senior: '#1f3a5f',
+    executive: '#1f3a5f',
+    graduate: '#2f7a5d',
+    product: '#2b3a55',
+    portfolio: '#7a3e20',
+    technical: '#111111',
+    'modern-two-column': '#1f3a63',
+    'modern-timeline': '#2f5f9b',
+    'clean-classic': '#111111',
+    'accent-sidebar': '#2f7a5d',
+    'bold-headers': '#1f3a63',
+  };
+  return palette[templateId] || '#111111';
+}
+
+function resolveTemplateFont(templateId: string) {
+  const families: Record<string, string> = {
+    senior: '"Georgia", "Times New Roman", serif',
+    executive: '"Georgia", "Times New Roman", serif',
+    portfolio: '"Georgia", "Times New Roman", serif',
+    modern: '"Source Sans 3", "Segoe UI", Arial, sans-serif',
+    technical: '"IBM Plex Sans", "Segoe UI", Arial, sans-serif',
+    graduate: '"Work Sans", "Segoe UI", Arial, sans-serif',
+    default: '"IBM Plex Sans", "Segoe UI", Arial, sans-serif',
+  };
+  return families[templateId] || families.default;
+}
+
+function resolveTemplateSpacing(spacing: PdfTheme['spacing']) {
+  if (spacing === 'compact' || spacing === 'airy' || spacing === 'normal') return spacing;
+  return 'normal';
+}
+
+function safeCssClass(value: string) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-');
+}
+
+function logExportRenderMeta(input: {
+  resumeId: string;
+  templateId: string;
+  cssIncluded: boolean;
+  renderer: string;
+}) {
+  if (process.env.NODE_ENV === 'production') return;
+  console.info(
+    `[resume-export] resumeId=${input.resumeId} templateId=${input.templateId} cssIncluded=${input.cssIncluded ? 'true' : 'false'} renderer=${input.renderer}`,
+  );
 }
 
 function escapeHtml(input: string): string {

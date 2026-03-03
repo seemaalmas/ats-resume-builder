@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { api, getAccessToken, isCurrentUserAdmin } from '@/src/lib/api';
+import { api, getAccessToken, isCurrentUserAdmin, startSessionHeartbeat } from '@/src/lib/api';
 
 export default function TopNav() {
   const router = useRouter();
@@ -11,6 +11,7 @@ export default function TopNav() {
   const [admin, setAdmin] = useState(false);
 
   useEffect(() => {
+    startSessionHeartbeat();
     const update = () => {
       const hasToken = Boolean(getAccessToken());
       setAuthed(hasToken);

@@ -775,7 +775,7 @@ function parseDateToken(token: string, end: boolean) {
   return null;
 }
 
-function estimateExperienceMonths(experience: ExperienceItem[]) {
+export function estimateExperienceMonths(experience: ExperienceItem[]) {
   let total = 0;
   for (const item of experience) {
     const start = parseDateToken(item.startDate || '', false);

@@ -13,6 +13,8 @@ datasource db {
 model User {
   id           String   @id @default(cuid())
   email        String   @unique
+  mobile       String?  @unique
+  isAdmin      Boolean  @default(false)
   fullName     String
   passwordHash String
   refreshTokenHash String?
@@ -60,4 +62,18 @@ model AppSetting {
   paymentFeatureEnabled Boolean  @default(false)
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
+}
+
+model OtpChallenge {
+  id          String   @id @default(uuid())
+  mobile      String
+  otpHash     String
+  expiresAt   DateTime
+  attempts    Int      @default(0)
+  lockedUntil DateTime?
+  ip          String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  @@index([mobile])
 }

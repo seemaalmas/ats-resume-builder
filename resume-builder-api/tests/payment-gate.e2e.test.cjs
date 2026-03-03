@@ -139,13 +139,18 @@ test('free user can access ATS and PDF when payment gate disabled', async () => 
 
   const dummyBuffer = Buffer.from('pdf-bytes');
   const originalLaunch = puppeteer.launch;
-  puppeteer.launch = async () => ({
+  const originalDefaultLaunch = puppeteer.default?.launch;
+  const mockLaunch = async () => ({
     newPage: async () => ({
       setContent: async () => {},
       pdf: async () => dummyBuffer,
     }),
     close: async () => {},
   });
+  puppeteer.launch = mockLaunch;
+  if (puppeteer.default) {
+    puppeteer.default.launch = mockLaunch;
+  }
 
   try {
     for (let i = 0; i < 3; i += 1) {
@@ -170,6 +175,9 @@ test('free user can access ATS and PDF when payment gate disabled', async () => 
     }
   } finally {
     puppeteer.launch = originalLaunch;
+    if (puppeteer.default && originalDefaultLaunch) {
+      puppeteer.default.launch = originalDefaultLaunch;
+    }
   }
 });
 

@@ -5,6 +5,14 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './jwt.strategy';
+import { GsmModemSender } from './sms.gateway';
+import { RequestOtpService } from './request-otp.service';
+import { VerifyOtpService } from './verify-otp.service';
+import { OtpController } from './otp.controller';
+import { OtpAuthService } from './otp-auth.service';
+import { SMS_PROVIDER } from './sms.provider';
+import { TwilioVerifyProvider } from './twilio-verify.provider';
+import { DevOtpProvider } from './dev-otp.provider';
 
 @Module({
   imports: [
@@ -20,8 +28,26 @@ import { JwtStrategy } from './jwt.strategy';
       }),
     }),
   ],
-  providers: [AuthService, JwtStrategy],
-  controllers: [AuthController],
+  providers: [
+    AuthService,
+    JwtStrategy,
+    GsmModemSender,
+    RequestOtpService,
+    VerifyOtpService,
+    OtpAuthService,
+    TwilioVerifyProvider,
+    DevOtpProvider,
+    {
+      provide: SMS_PROVIDER,
+      inject: [ConfigService, TwilioVerifyProvider, DevOtpProvider],
+      useFactory: (config: ConfigService, twilio: TwilioVerifyProvider, dev: DevOtpProvider) => {
+        const provider = String(config.get<string>('SMS_PROVIDER', 'twilio') || '').trim().toLowerCase();
+        if (provider === 'twilio') return twilio;
+        return dev;
+      },
+    },
+  ],
+  controllers: [AuthController, OtpController],
   exports: [AuthService],
 })
 export class AuthModule {}

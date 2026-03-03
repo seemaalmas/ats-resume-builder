@@ -49,6 +49,8 @@ node dist/main.js
 - `STRIPE_CANCEL_URL`
 - `ADMIN_EMAILS` (comma-separated)
 - `ADMIN_USER_IDS` (comma-separated)
+- `ADMIN_MOBILES` (comma-separated normalized mobile numbers for admin access)
+- `SMS_GATEWAY_URL` (URL where the SMS gateway listens, defaults to http://localhost:7071)
 - `RESUME_CREATION_RATE_LIMIT_DEFAULT` (default fallback if DB setting is missing)
 - `FORCE_DISABLE_RATE_LIMIT` (`true` hard-disables resume create rate limiting)
 
@@ -91,6 +93,7 @@ node dist/main.js
 - `GET /resumes/:id/pdf` (JWT)
 - `GET /admin/settings` (JWT + Admin)
 - `PUT /admin/settings/rate-limit` (JWT + Admin)
+- `PATCH /admin/settings` (JWT + Admin)
 
 ## Test Notes
 - Backend tests are deterministic and run via:
@@ -107,3 +110,9 @@ node dist/main.js
    - `PUT /admin/settings/rate-limit` with `{ "enabled": true }`.
 3. Emergency kill switch in production:
    - set `FORCE_DISABLE_RATE_LIMIT=true` and restart API.
+
+# SMS Gateway
+
+- The project ships with a lightweight [sms-gateway](../sms-gateway) microservice that proxies to a local GSM modem via the `gammu` CLI.
+- In production, `/auth/request-otp` (added in this iteration) will call `SMS_GATEWAY_URL` to deliver the OTP; set the URL in `.env`.
+- Run the gateway with `npm install` + `npm start` inside the `sms-gateway` folder before requesting OTPs in production.

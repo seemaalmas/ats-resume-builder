@@ -10,6 +10,7 @@ Next.js (App Router) web client for the Resume Builder SaaS.
 - `NEXT_PUBLIC_API_URL` (default: http://localhost:3000)
 - `NEXT_PUBLIC_ADMIN_EMAILS` (comma-separated admin emails for UI visibility)
 - `NEXT_PUBLIC_ADMIN_USER_IDS` (comma-separated admin user ids for UI visibility)
+- `NEXT_PUBLIC_ADMIN_MOBILES` (comma-separated normalized mobile numbers for UI visibility)
 
 ## Commands
 - `npm run dev`

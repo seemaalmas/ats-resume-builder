@@ -227,6 +227,7 @@ export default function ResumeEditor() {
   const searchParams = useSearchParams();
   const idParam = searchParams.get('id') || '';
   const templateParam = searchParams.get('template') || '';
+  const normalizedTemplateParam = String(templateParam || '').trim();
   const flowParam = (searchParams.get('flow') || '').trim().toLowerCase();
   const isReviewAtsPage = pathname === '/resume/review';
   const [resumeId, setResumeId] = useState(idParam);
@@ -284,6 +285,8 @@ export default function ResumeEditor() {
   const actionVerbTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reviewAtsRunRef = useRef(0);
   const snackbarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingTemplateSaveRef = useRef<Promise<void> | null>(null);
+  const templateSaveRunRef = useRef(0);
   const sectionDebugEnabled = process.env.NEXT_PUBLIC_SECTION_DEBUG === '1';
   const isReviewFlow = isReviewAtsPage || flowParam === 'upload' || flowParam === 'review';
   const resumeQuotaBlocked = paymentFeatureEnabled && quotaState.resumeBlocked;
@@ -486,12 +489,13 @@ export default function ResumeEditor() {
       api.getResume(idParam)
         .then((r) => {
           setResumeId(r.id);
-          setResume(resumeFromImportedApi(r));
+          const loadedResume = resumeFromImportedApi(r);
+          setResume(loadedResume);
         })
         .catch((err) => setMessage(err instanceof Error ? err.message : 'Failed to load resume'));
       return;
     }
-  }, [idParam, templateParam]);
+  }, [idParam, normalizedTemplateParam]);
 
   useEffect(() => {
     if (idParam) return;
@@ -836,6 +840,67 @@ export default function ResumeEditor() {
     snackbarTimerRef.current = setTimeout(() => setSnackbar(null), 3200);
   }, []);
 
+  const persistTemplateId = useCallback(
+    async (nextTemplateId: string, options?: { silent?: boolean }) => {
+      const targetTemplateId = String(nextTemplateId || '').trim();
+      if (!resumeId || !targetTemplateId) return;
+      const runId = ++templateSaveRunRef.current;
+      const savePromise = api.updateResume(resumeId, { templateId: targetTemplateId })
+        .then(() => undefined)
+        .catch((err: unknown) => {
+          if (!options?.silent) {
+            const errorMessage = err instanceof Error ? err.message : 'Failed to save selected template.';
+            setMessage(errorMessage);
+            showSnackbar('error', errorMessage);
+          }
+          throw err;
+        })
+        .finally(() => {
+          if (templateSaveRunRef.current === runId) {
+            pendingTemplateSaveRef.current = null;
+          }
+        });
+      pendingTemplateSaveRef.current = savePromise;
+      await savePromise;
+    },
+    [resumeId, showSnackbar],
+  );
+
+  useEffect(() => {
+    const nextTemplateId = normalizedTemplateParam;
+    const currentTemplateId = String(resume.templateId || '').trim();
+    if (!nextTemplateId || nextTemplateId === currentTemplateId) return;
+
+    setResume((prev) => ({ ...prev, templateId: nextTemplateId }));
+    if (!resumeId) return;
+
+    persistTemplateId(nextTemplateId).catch(() => {
+      setResume((prev) => {
+        if (String(prev.templateId || '').trim() !== nextTemplateId) return prev;
+        return { ...prev, templateId: currentTemplateId || undefined };
+      });
+    });
+  }, [normalizedTemplateParam, persistTemplateId, resume.templateId, resumeId]);
+
+  const ensureTemplateSavedForExport = useCallback(async () => {
+    const desiredTemplateId = String(normalizedTemplateParam || resume.templateId || '').trim();
+    if (!desiredTemplateId) {
+      if (pendingTemplateSaveRef.current) {
+        await pendingTemplateSaveRef.current;
+      }
+      return;
+    }
+    const currentTemplateId = String(resume.templateId || '').trim();
+    if (currentTemplateId !== desiredTemplateId) {
+      setResume((prev) => ({ ...prev, templateId: desiredTemplateId }));
+      await persistTemplateId(desiredTemplateId, { silent: true });
+      return;
+    }
+    if (pendingTemplateSaveRef.current) {
+      await pendingTemplateSaveRef.current;
+    }
+  }, [normalizedTemplateParam, persistTemplateId, resume.templateId]);
+
   const rememberRecentCompanies = useCallback((values: string[]) => {
     const next = persistRecentCompanies({ companies: values });
     setRecentCompanies(next);
@@ -852,7 +917,10 @@ export default function ResumeEditor() {
       setFieldErrors({});
       setLastValidationCode('');
     }
-    const payload = buildResumePayload(resume, sections);
+    const payload = buildResumePayload({
+      ...resume,
+      templateId: normalizedTemplateParam || resume.templateId,
+    }, sections);
     try {
       let result: Resume;
       if (resumeId) {
@@ -1288,7 +1356,7 @@ export default function ResumeEditor() {
   };
 
   return (
-    <main className="grid review-grid">
+    <main className={isReviewAtsPage ? 'grid review-grid' : 'grid'}>
       <section ref={editorRef} className={`card ${editorColumnClass}`}>
         <div className="editor-header">
           <div>
@@ -2634,11 +2702,15 @@ export default function ResumeEditor() {
                     onClick={async () => {
                       if (!resumeId) return;
                       try {
-                        await api.downloadPdf(resumeId);
+                        await ensureTemplateSavedForExport();
+                        const exportTemplateId = String(normalizedTemplateParam || resume.templateId || '').trim() || undefined;
+                        await api.downloadPdf(resumeId, exportTemplateId);
                         setMessage('PDF downloaded.');
                         setExportOpen(false);
                       } catch (err: unknown) {
-                        setMessage(err instanceof Error ? err.message : 'PDF export failed');
+                        const errorMessage = err instanceof Error ? err.message : 'PDF export failed';
+                        setMessage(errorMessage);
+                        showSnackbar('error', errorMessage);
                       }
                     }}
                   >
@@ -2650,11 +2722,15 @@ export default function ResumeEditor() {
                     onClick={async () => {
                       if (!resumeId) return;
                       try {
-                        const blob = await api.getPdfBlob(resumeId);
+                        await ensureTemplateSavedForExport();
+                        const exportTemplateId = String(normalizedTemplateParam || resume.templateId || '').trim() || undefined;
+                        const blob = await api.getPdfBlob(resumeId, exportTemplateId);
                         const url = window.URL.createObjectURL(blob);
                         window.open(url, '_blank');
                       } catch (err: unknown) {
-                        setMessage(err instanceof Error ? err.message : 'Print preview failed');
+                        const errorMessage = err instanceof Error ? err.message : 'Print preview failed';
+                        setMessage(errorMessage);
+                        showSnackbar('error', errorMessage);
                       }
                     }}
                   >

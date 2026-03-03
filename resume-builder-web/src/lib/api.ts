@@ -19,7 +19,8 @@ export type {
   User,
 } from 'resume-builder-shared';
 
-export type AuthResponse = { user: User; accessToken: string; refreshToken: string };
+export type AuthResponse = { user: User; accessToken: string; refreshToken: string; expiresAt?: string };
+export type RequestOtpResponse = { requestId: string; devOtp?: string };
 export type UploadResumeResponse = ResumeImportResult & {
   text?: string;
   fileName?: string;
@@ -174,7 +175,15 @@ const storageKeys = {
   refreshToken: 'refreshToken',
   userId: 'userId',
   userEmail: 'userEmail',
+  sessionExpiresAt: 'sessionExpiresAt',
+  sessionLastActivityAt: 'sessionLastActivityAt',
 };
+
+const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+const REFRESH_GRACE_MS = 2 * 60 * 1000;
+const ACTIVITY_WRITE_THROTTLE_MS = 5_000;
+let silentRefreshInFlight: Promise<AuthResponse | null> | null = null;
+let sessionHeartbeatStarted = false;
 
 export function getAccessToken() {
   if (typeof window === 'undefined') return '';
@@ -207,14 +216,24 @@ export function getCurrentUserEmail() {
   return email;
 }
 
+export function getCurrentUserMobile() {
+  if (typeof window === 'undefined') return '';
+  const payload = decodeJwtPayload(getAccessToken());
+  const mobile = typeof payload?.mobile === 'string' ? payload.mobile : '';
+  return mobile;
+}
+
 export function isCurrentUserAdmin() {
   if (typeof window === 'undefined') return false;
   const adminIds = parseCsvSet(process.env.NEXT_PUBLIC_ADMIN_USER_IDS);
   const adminEmails = parseCsvSet(process.env.NEXT_PUBLIC_ADMIN_EMAILS);
+  const adminMobiles = parseMobileSet(process.env.NEXT_PUBLIC_ADMIN_MOBILES);
   const userId = getCurrentUserId().toLowerCase();
   const email = getCurrentUserEmail().toLowerCase();
   if (userId && adminIds.has(userId)) return true;
   if (email && adminEmails.has(email)) return true;
+  const mobile = normalizeMobile(getCurrentUserMobile());
+  if (mobile && adminMobiles.has(mobile)) return true;
   return false;
 }
 
@@ -224,6 +243,8 @@ function setAuthTokens(auth: AuthResponse) {
   localStorage.setItem(storageKeys.refreshToken, auth.refreshToken);
   localStorage.setItem(storageKeys.userId, auth.user.id);
   localStorage.setItem(storageKeys.userEmail, auth.user.email);
+  persistSessionExpiry(auth);
+  markSessionActivity(true);
   notifyAuthStateChanged();
 }
 
@@ -233,6 +254,8 @@ function clearAuthTokens() {
   localStorage.removeItem(storageKeys.refreshToken);
   localStorage.removeItem(storageKeys.userId);
   localStorage.removeItem(storageKeys.userEmail);
+  localStorage.removeItem(storageKeys.sessionExpiresAt);
+  localStorage.removeItem(storageKeys.sessionLastActivityAt);
   notifyAuthStateChanged();
 }
 
@@ -257,6 +280,122 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
   }
 }
 
+function parseExpiresAtMs(value?: string | null): number {
+  const raw = String(value || '').trim();
+  if (!raw) return 0;
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) return 0;
+  return ms;
+}
+
+function getAccessTokenExpiryMs(token?: string): number {
+  const payload = decodeJwtPayload(token || getAccessToken());
+  const exp = Number(payload?.exp);
+  if (!Number.isFinite(exp) || exp <= 0) return 0;
+  return exp * 1000;
+}
+
+function persistSessionExpiry(auth: AuthResponse) {
+  if (typeof window === 'undefined') return;
+  const expiresAtMs = parseExpiresAtMs(auth.expiresAt) || getAccessTokenExpiryMs(auth.accessToken);
+  if (!expiresAtMs) return;
+  localStorage.setItem(storageKeys.sessionExpiresAt, new Date(expiresAtMs).toISOString());
+}
+
+function getSessionExpiryMs(): number {
+  if (typeof window === 'undefined') return 0;
+  const fromStorage = parseExpiresAtMs(localStorage.getItem(storageKeys.sessionExpiresAt));
+  if (fromStorage) return fromStorage;
+  const fromToken = getAccessTokenExpiryMs();
+  if (fromToken) {
+    localStorage.setItem(storageKeys.sessionExpiresAt, new Date(fromToken).toISOString());
+  }
+  return fromToken;
+}
+
+function readIdleTimeoutMs() {
+  const raw = String(process.env.NEXT_PUBLIC_SESSION_IDLE_TIMEOUT_MS || '').trim();
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_IDLE_TIMEOUT_MS;
+  return Math.floor(parsed);
+}
+
+function markSessionActivity(force = false) {
+  if (typeof window === 'undefined') return;
+  const now = Date.now();
+  const current = Number(localStorage.getItem(storageKeys.sessionLastActivityAt) || '0');
+  if (!force && current > 0 && now - current < ACTIVITY_WRITE_THROTTLE_MS) return;
+  localStorage.setItem(storageKeys.sessionLastActivityAt, String(now));
+}
+
+function getLastSessionActivityMs() {
+  if (typeof window === 'undefined') return 0;
+  const value = Number(localStorage.getItem(storageKeys.sessionLastActivityAt) || '0');
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return value;
+}
+
+async function refreshSilently(): Promise<AuthResponse | null> {
+  if (typeof window === 'undefined') return null;
+  const refreshToken = getRefreshToken();
+  const userId = getUserId();
+  if (!refreshToken || !userId) {
+    clearAuthTokens();
+    return null;
+  }
+  if (!silentRefreshInFlight) {
+    silentRefreshInFlight = refresh({ userId, refreshToken }, { silent: true })
+      .then((auth) => {
+        setAuthTokens(auth);
+        return auth;
+      })
+      .catch(() => {
+        clearAuthTokens();
+        return null;
+      })
+      .finally(() => {
+        silentRefreshInFlight = null;
+      });
+  }
+  return silentRefreshInFlight;
+}
+
+async function ensureSessionActive() {
+  if (typeof window === 'undefined') return;
+  if (!getAccessToken()) return;
+
+  const idleTimeoutMs = readIdleTimeoutMs();
+  const now = Date.now();
+  const lastActivityMs = getLastSessionActivityMs();
+  if (lastActivityMs > 0 && now - lastActivityMs >= idleTimeoutMs) {
+    clearAuthTokens();
+    return;
+  }
+  markSessionActivity(lastActivityMs <= 0);
+
+  const expiryMs = getSessionExpiryMs();
+  if (!expiryMs) return;
+  if (expiryMs - now > REFRESH_GRACE_MS) return;
+
+  await refreshSilently();
+}
+
+export function startSessionHeartbeat() {
+  if (typeof window === 'undefined' || sessionHeartbeatStarted) return;
+  sessionHeartbeatStarted = true;
+  const onActivity = () => {
+    markSessionActivity();
+  };
+  for (const eventName of ['mousedown', 'keydown', 'touchstart', 'scroll', 'pointerdown']) {
+    window.addEventListener(eventName, onActivity, { passive: true });
+  }
+  markSessionActivity(true);
+  void ensureSessionActive();
+  window.setInterval(() => {
+    void ensureSessionActive();
+  }, 60_000);
+}
+
 function parseCsvSet(raw?: string) {
   return new Set(
     String(raw || '')
@@ -266,31 +405,78 @@ function parseCsvSet(raw?: string) {
   );
 }
 
+function parseMobileSet(raw?: string) {
+  return new Set(
+    String(raw || '')
+      .split(',')
+      .map((item) => normalizeMobile(item))
+      .filter(Boolean),
+  );
+}
+
+function normalizeMobile(input?: string) {
+  const raw = String(input || '').trim();
+  if (!raw) return '';
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) return '';
+  if (digits.length === 10) {
+    return `+91${digits}`;
+  }
+  return `+${digits}`;
+}
+
 function isDev() {
   return process.env.NODE_ENV !== 'production';
 }
 
-async function readApiErrorDetails(res: Response, fallback: string): Promise<ApiErrorDetails> {
-  const contentType = res.headers.get('content-type') || '';
-  let payload: unknown = null;
+type ApiErrorReadOptions = {
+  log?: boolean;
+};
+
+async function readResponsePayload(res: Response): Promise<unknown> {
+  let text = '';
   try {
-    if (contentType.includes('application/json')) {
-      payload = await res.json();
-    } else {
-      const text = await res.text();
-      payload = text ? JSON.parse(text) : null;
-    }
+    text = await res.text();
   } catch {
+    return null;
+  }
+
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  const contentType = (res.headers.get('content-type') || '').toLowerCase();
+  const shouldParseJson = contentType.includes('application/json') || trimmed.startsWith('{') || trimmed.startsWith('[');
+  if (shouldParseJson) {
     try {
-      const text = await res.text();
-      payload = text;
+      return JSON.parse(trimmed);
     } catch {
-      payload = null;
+      return trimmed;
     }
   }
 
-  if (isDev()) {
-    console.error('[API Error]', { status: res.status, url: res.url, payload });
+  return trimmed;
+}
+
+function logApiError(res: Response, payload: unknown) {
+  if (!isDev()) return;
+  const details = {
+    status: Number.isFinite(res.status) ? res.status : 0,
+    url: res.url || '(unknown)',
+    payload: payload ?? null,
+  };
+  if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+    console.warn('[API Error]', details);
+  }
+}
+
+async function readApiErrorDetails(
+  res: Response,
+  fallback: string,
+  options: ApiErrorReadOptions = {},
+): Promise<ApiErrorDetails> {
+  const payload = await readResponsePayload(res);
+  if (options.log !== false) {
+    logApiError(res, payload);
   }
 
   const details: ApiErrorDetails = {
@@ -383,6 +569,8 @@ async function readApiErrorDetails(res: Response, fallback: string): Promise<Api
 }
 
 async function request<T>(path: string, options: RequestInit = {}, retry = true): Promise<T> {
+  await ensureSessionActive();
+
   const res = await fetch(`${baseUrl}${path}`, {
     ...options,
     headers: {
@@ -392,12 +580,13 @@ async function request<T>(path: string, options: RequestInit = {}, retry = true)
     },
   });
 
-  if (res.status === 401 && retry && getRefreshToken() && getUserId()) {
-    try {
-      const refreshed = await refresh({ userId: getUserId(), refreshToken: getRefreshToken() });
-      setAuthTokens(refreshed);
-      return request<T>(path, options, false);
-    } catch {
+  if (res.status === 401) {
+    if (retry) {
+      const refreshed = await refreshSilently();
+      if (refreshed) {
+        return request<T>(path, options, false);
+      }
+    } else if (getAccessToken()) {
       clearAuthTokens();
     }
   }
@@ -407,6 +596,8 @@ async function request<T>(path: string, options: RequestInit = {}, retry = true)
 }
 
 async function upload<T>(path: string, formData: FormData): Promise<T> {
+  await ensureSessionActive();
+
   const res = await fetch(`${baseUrl}${path}`, {
     method: 'POST',
     body: formData,
@@ -415,12 +606,11 @@ async function upload<T>(path: string, formData: FormData): Promise<T> {
     },
   });
 
-  if (res.status === 401 && getRefreshToken() && getUserId()) {
-    try {
-      const refreshed = await refresh({ userId: getUserId(), refreshToken: getRefreshToken() });
-      setAuthTokens(refreshed);
+  if (res.status === 401) {
+    const refreshed = await refreshSilently();
+    if (refreshed) {
       return upload<T>(path, formData);
-    } catch {
+    } else if (getAccessToken()) {
       clearAuthTokens();
     }
   }
@@ -429,13 +619,13 @@ async function upload<T>(path: string, formData: FormData): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function refresh(payload: RefreshPayload): Promise<AuthResponse> {
+export async function refresh(payload: RefreshPayload, options: { silent?: boolean } = {}): Promise<AuthResponse> {
   const res = await fetch(`${baseUrl}/auth/refresh`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) throw new ApiRequestError(await readApiErrorDetails(res, 'Refresh failed'));
+  if (!res.ok) throw new ApiRequestError(await readApiErrorDetails(res, 'Refresh failed', { log: !options.silent }));
   return res.json() as Promise<AuthResponse>;
 }
 
@@ -451,6 +641,21 @@ export const api = {
 
   login: async (payload: { email: string; password: string }) => {
     const auth = await request<AuthResponse>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    setAuthTokens(auth);
+    return auth;
+  },
+
+  requestOtp: async (phone: string) =>
+    request<RequestOtpResponse>('/auth/otp/send', {
+      method: 'POST',
+      body: JSON.stringify({ phone }),
+    }),
+
+  verifyOtp: async (payload: { phone: string; code: string; requestId: string }) => {
+    const auth = await request<AuthResponse>('/auth/otp/verify', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
@@ -569,8 +774,12 @@ export const api = {
       body: JSON.stringify({ paymentFeatureEnabled: enabled }),
     }),
 
-  downloadPdf: async (id: string) => {
-    const res = await fetch(`${baseUrl}/resumes/${id}/pdf`, {
+  downloadPdf: async (id: string, templateId?: string) => {
+    const templateQuery = String(templateId || '').trim();
+    const requestUrl = templateQuery
+      ? `${baseUrl}/resumes/${id}/pdf?templateId=${encodeURIComponent(templateQuery)}`
+      : `${baseUrl}/resumes/${id}/pdf`;
+    const res = await fetch(requestUrl, {
       method: 'GET',
       headers: {
         ...(getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : {}),
@@ -578,18 +787,22 @@ export const api = {
     });
     if (!res.ok) throw new ApiRequestError(await readApiErrorDetails(res, 'PDF export failed'));
     const blob = await res.blob();
-    const url = window.URL.createObjectURL(blob);
+    const blobUrl = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
+    a.href = blobUrl;
     a.download = `resume-${id}.pdf`;
     document.body.appendChild(a);
     a.click();
     a.remove();
-    window.URL.revokeObjectURL(url);
+    window.URL.revokeObjectURL(blobUrl);
   },
 
-  getPdfBlob: async (id: string) => {
-    const res = await fetch(`${baseUrl}/resumes/${id}/pdf`, {
+  getPdfBlob: async (id: string, templateId?: string) => {
+    const templateQuery = String(templateId || '').trim();
+    const url = templateQuery
+      ? `${baseUrl}/resumes/${id}/pdf?templateId=${encodeURIComponent(templateQuery)}`
+      : `${baseUrl}/resumes/${id}/pdf`;
+    const res = await fetch(url, {
       method: 'GET',
       headers: {
         ...(getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : {}),

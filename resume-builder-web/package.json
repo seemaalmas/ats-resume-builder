@@ -5,9 +5,9 @@
   "description": "Next.js (App Router) web client",
   "scripts": {
     "lint": "next lint",
-    "test": "tsx --test tests/**/*.test.ts",
-    "build": "next build",
-    "dev": "next dev",
+    "test": "tsx --test tests/**/*.test.ts tests/**/*.test.tsx",
+    "build": "next build --webpack",
+    "dev": "next dev --webpack",
     "start": "next start"
   },
   "dependencies": {
@@ -18,9 +18,11 @@
     "zustand": "latest"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.2",
     "@types/node": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",
+    "jsdom": "^28.1.0",
     "tsx": "^4.20.5",
     "typescript": "latest"
   }

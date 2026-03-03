@@ -15,6 +15,7 @@ JwtAuthGuard.prototype.canActivate = function canActivate(context) {
   req.user = {
     userId: String(req.headers['x-test-user-id'] || 'user-1'),
     email: String(req.headers['x-test-user-email'] || 'user-1@example.com'),
+    mobile: String(req.headers['x-test-user-mobile'] || ''),
   };
   return true;
 };
@@ -22,8 +23,8 @@ JwtAuthGuard.prototype.canActivate = function canActivate(context) {
 function createPrisma() {
   const state = {
     users: new Map([
-      ['admin-1', { id: 'admin-1', email: 'admin@example.com' }],
-      ['user-1', { id: 'user-1', email: 'user@example.com' }],
+      ['admin-1', { id: 'admin-1', email: 'admin@example.com', mobile: '+919307009427' }],
+      ['user-1', { id: 'user-1', email: 'user@example.com', mobile: '+919400000000' }],
     ]),
     appSetting: {
       id: APP_SETTING_ID,
@@ -35,15 +36,18 @@ function createPrisma() {
 
   return {
     user: {
-      findUnique: async ({ where, select }) => {
-        const key = where.id;
-        const row = state.users.get(key);
-        if (!row) return null;
-        if (select && select.email) {
-          return { email: row.email };
-        }
-        return { ...row };
-      },
+        findUnique: async ({ where, select }) => {
+          const key = where.id;
+          const row = state.users.get(key);
+          if (!row) return null;
+          if (select) {
+            const result = {};
+            if (select.email) result.email = row.email;
+            if (select.mobile) result.mobile = row.mobile;
+            return result;
+          }
+          return { ...row };
+        },
     },
     appSetting: {
       findUnique: async ({ where }) => {
@@ -115,46 +119,51 @@ async function withEnv(overrides, run) {
 }
 
 test('admin settings endpoints block non-admin and allow admin toggle persistence', async () => {
-  await withEnv(
-    {
-      ADMIN_EMAILS: 'admin@example.com',
-      ADMIN_USER_IDS: undefined,
-      FORCE_DISABLE_RATE_LIMIT: undefined,
-      RESUME_CREATION_RATE_LIMIT_DEFAULT: 'false',
-      NODE_ENV: 'production',
-    },
-    async () => {
+    await withEnv(
+      {
+        ADMIN_EMAILS: undefined,
+        ADMIN_USER_IDS: undefined,
+        ADMIN_MOBILES: '+919307009427',
+        FORCE_DISABLE_RATE_LIMIT: undefined,
+        RESUME_CREATION_RATE_LIMIT_DEFAULT: 'false',
+        NODE_ENV: 'production',
+      },
+      async () => {
       const prisma = createPrisma();
       const app = await createApp(prisma);
 
       await request(app.getHttpServer())
-        .get('/admin/settings')
-        .set('x-test-user-id', 'user-1')
-        .set('x-test-user-email', 'user@example.com')
+      .get('/admin/settings')
+      .set('x-test-user-id', 'user-1')
+      .set('x-test-user-email', 'user@example.com')
+      .set('x-test-user-mobile', '+919400000000')
         .expect(403);
 
       const initial = await request(app.getHttpServer())
-        .get('/admin/settings')
-        .set('x-test-user-id', 'admin-1')
-        .set('x-test-user-email', 'admin@example.com')
+      .get('/admin/settings')
+      .set('x-test-user-id', 'admin-1')
+      .set('x-test-user-email', 'admin@example.com')
+      .set('x-test-user-mobile', '+919307009427')
         .expect(200);
 
       assert.equal(initial.body.flags.resumeCreationRateLimitEnabled, false);
       assert.equal(initial.body.flags.paymentFeatureEnabled, false);
 
       const enabled = await request(app.getHttpServer())
-        .put('/admin/settings/rate-limit')
-        .set('x-test-user-id', 'admin-1')
-        .set('x-test-user-email', 'admin@example.com')
+      .put('/admin/settings/rate-limit')
+      .set('x-test-user-id', 'admin-1')
+      .set('x-test-user-email', 'admin@example.com')
+      .set('x-test-user-mobile', '+919307009427')
         .send({ enabled: true })
         .expect(200);
 
       assert.equal(enabled.body.flags.resumeCreationRateLimitEnabled, true);
 
       const refreshed = await request(app.getHttpServer())
-        .get('/admin/settings')
-        .set('x-test-user-id', 'admin-1')
-        .set('x-test-user-email', 'admin@example.com')
+      .get('/admin/settings')
+      .set('x-test-user-id', 'admin-1')
+      .set('x-test-user-email', 'admin@example.com')
+      .set('x-test-user-mobile', '+919307009427')
         .expect(200);
 
       assert.equal(refreshed.body.flags.resumeCreationRateLimitEnabled, true);
@@ -162,9 +171,10 @@ test('admin settings endpoints block non-admin and allow admin toggle persistenc
       assert.equal(prisma.__getState().appSetting.rateLimitEnabled, true);
 
       const disabled = await request(app.getHttpServer())
-        .put('/admin/settings/rate-limit')
-        .set('x-test-user-id', 'admin-1')
-        .set('x-test-user-email', 'admin@example.com')
+      .put('/admin/settings/rate-limit')
+      .set('x-test-user-id', 'admin-1')
+      .set('x-test-user-email', 'admin@example.com')
+      .set('x-test-user-mobile', '+919307009427')
         .send({ enabled: false })
         .expect(200);
 
@@ -173,9 +183,10 @@ test('admin settings endpoints block non-admin and allow admin toggle persistenc
       assert.equal(prisma.__getState().appSetting.rateLimitEnabled, false);
 
       const paymentEnabled = await request(app.getHttpServer())
-        .put('/admin/settings/payment')
-        .set('x-test-user-id', 'admin-1')
-        .set('x-test-user-email', 'admin@example.com')
+      .put('/admin/settings/payment')
+      .set('x-test-user-id', 'admin-1')
+      .set('x-test-user-email', 'admin@example.com')
+      .set('x-test-user-mobile', '+919307009427')
         .send({ enabled: true })
         .expect(200);
 
@@ -183,9 +194,10 @@ test('admin settings endpoints block non-admin and allow admin toggle persistenc
       assert.equal(prisma.__getState().appSetting.paymentFeatureEnabled, true);
 
       const paymentDisabled = await request(app.getHttpServer())
-        .put('/admin/settings/payment')
-        .set('x-test-user-id', 'admin-1')
-        .set('x-test-user-email', 'admin@example.com')
+      .put('/admin/settings/payment')
+      .set('x-test-user-id', 'admin-1')
+      .set('x-test-user-email', 'admin@example.com')
+      .set('x-test-user-mobile', '+919307009427')
         .send({ enabled: false })
         .expect(200);
 
@@ -203,6 +215,7 @@ test('PATCH /admin/settings toggles payment flag and denies non-admin', async ()
     {
       ADMIN_EMAILS: 'admin@example.com',
       ADMIN_USER_IDS: undefined,
+      ADMIN_MOBILES: '+919307009427',
       FORCE_DISABLE_RATE_LIMIT: undefined,
       RESUME_CREATION_RATE_LIMIT_DEFAULT: 'false',
       NODE_ENV: 'production',
@@ -212,16 +225,18 @@ test('PATCH /admin/settings toggles payment flag and denies non-admin', async ()
       const app = await createApp(prisma);
 
       await request(app.getHttpServer())
-        .patch('/admin/settings')
-        .set('x-test-user-id', 'user-1')
-        .set('x-test-user-email', 'user@example.com')
+      .patch('/admin/settings')
+      .set('x-test-user-id', 'user-1')
+      .set('x-test-user-email', 'user@example.com')
+      .set('x-test-user-mobile', '+919400000000')
         .send({ paymentFeatureEnabled: true })
         .expect(403);
 
       const response = await request(app.getHttpServer())
-        .patch('/admin/settings')
-        .set('x-test-user-id', 'admin-1')
-        .set('x-test-user-email', 'admin@example.com')
+      .patch('/admin/settings')
+      .set('x-test-user-id', 'admin-1')
+      .set('x-test-user-email', 'admin@example.com')
+      .set('x-test-user-mobile', '+919307009427')
         .send({ paymentFeatureEnabled: true })
         .expect(200);
 

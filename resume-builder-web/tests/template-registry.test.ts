@@ -1,19 +1,25 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { templates, type TemplateVariant } from '@/src/components/TemplatePreview';
+import { templateList, templateRegistry, type TemplateId } from '@/shared/templateRegistry';
 
-const SUPPORTED_VARIANTS: TemplateVariant[] = ['classic', 'modern', 'student', 'senior'];
+const SUPPORTED_IDS: TemplateId[] = ['classic', 'modern', 'executive', 'technical', 'graduate'];
 
-test('template registry exposes every supported template variant', () => {
-  assert(templates.length >= 8, `expected at least 8 templates, got ${templates.length}`);
+test('template registry exposes the five supported ATS templates', () => {
+  assert.equal(templateList.length, 5);
   const seen = new Set<string>();
-  for (const template of templates) {
+  for (const template of templateList) {
     assert.ok(template.id, 'template id should not be empty');
     assert(!seen.has(template.id), `duplicate template id ${template.id}`);
     seen.add(template.id);
-    assert.ok(
-      SUPPORTED_VARIANTS.includes(template.variant),
-      `template ${template.id} references unsupported variant ${template.variant}`,
-    );
+    assert.ok(SUPPORTED_IDS.includes(template.id as TemplateId), `unsupported template id ${template.id}`);
+    assert.equal(typeof template.component, 'function');
   }
 });
+
+test('template registry object keys match template ids', () => {
+  for (const id of SUPPORTED_IDS) {
+    assert.ok(templateRegistry[id], `missing registry entry for ${id}`);
+    assert.equal(templateRegistry[id].id, id);
+  }
+});
+
