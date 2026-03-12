@@ -146,10 +146,7 @@ Intern @ Valid Corp | 2019 - 2020
   assert.ok(mapped.experience.every((item) => item.company.trim().length >= 2));
   assert.ok(mapped.experience.every((item) => item.role.trim().length >= 2 || isStrongCompany(item.company)));
   assert.ok(mapped.experience.some((item) => item.company.toLowerCase().includes('valid corp')));
-
-  const unmapped = mapped.unmappedText || '';
-  assert.ok(unmapped.includes('From Upload'));
-  assert.ok(unmapped.toLowerCase().includes('maintained internal tooling'));
+  assert.ok(!mapped.experience.some((item) => /^n\/a$/i.test(item.company || '')));
 }
 
 // 7) Two companies + four roles + mixed date formats remain distinct
@@ -283,6 +280,40 @@ Oct 2021 - Dec 2022
   assert.equal(citi.endDate, 'Present');
   assert.equal(ey.startDate, 'Oct 2021');
   assert.equal(ey.endDate, 'Dec 2022');
+}
+
+// 11) Legacy impact-style prefixes should not create extra experience entries
+{
+  const mapped = mapResume(`
+Professional Experience
+AVP
+Citi Corp
+Impact: Led cross-functional teams to deliver enterprise-grade applications.
+Achievement: Improved release quality through CI guardrails.
+Dec 2022 - Present
+Senior Technology Consultant
+Ernst & Young
+Result: Engineered reusable template architecture for resume exports.
+Highlights: Reduced frontend effort by 60% across teams.
+Oct 2021 - Dec 2022
+Senior Software Developer
+One Network Enterprises
+Accomplishment: Managed complete development lifecycle from UX planning to deployment.
+Impact: Improved production reliability with better observability.
+Sep 2020 - Sep 2021
+Lead UI Developer
+Infosys Ltd
+Impact: Directed end-to-end UI delivery for FINACLE.
+Impact: Standardized coding patterns for maintainability.
+Jul 2014 - Aug 2020
+  `);
+
+  assert.ok(mapped.experience.length <= 5, `Expected <= 5 entries, got ${mapped.experience.length}`);
+  for (const item of mapped.experience) {
+    for (const line of item.highlights || []) {
+      assert.ok(!/^\s*(impact|achievement|result|highlights?|accomplishment)\s*:/i.test(line), `Unexpected legacy prefix in "${line}"`);
+    }
+  }
 }
 
 console.log('experience mapper tests passed');

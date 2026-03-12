@@ -1,4 +1,10 @@
-import type { ResumeImportResult } from 'resume-builder-shared';
+import {
+  formatDateRange,
+  getAtsSectionTitle,
+  normalizeResumeForAts,
+  type AtsSectionKey,
+  type ResumeImportResult,
+} from 'resume-builder-shared';
 
 export type TemplateProps = {
   resumeData: ResumeImportResult;
@@ -6,6 +12,18 @@ export type TemplateProps = {
 
 export function cleanList(values: string[] | undefined) {
   return (values || []).map((item) => String(item || '').trim()).filter(Boolean);
+}
+
+export function normalizeTemplateResume(resumeData: ResumeImportResult) {
+  return normalizeResumeForAts(resumeData);
+}
+
+export function sectionTitle(section: Exclude<AtsSectionKey, 'header'>) {
+  return getAtsSectionTitle(section);
+}
+
+export function displayDateRange(startDate: string, endDate: string) {
+  return formatDateRange(String(startDate || ''), String(endDate || ''));
 }
 
 export function fullNameOrTitle(resumeData: ResumeImportResult) {
@@ -46,3 +64,8 @@ export function projectItems(resumeData: ResumeImportResult) {
   });
 }
 
+export function certificationItems(resumeData: ResumeImportResult) {
+  return (resumeData.certifications || []).filter((item) => {
+    return Boolean(String(item.name || '').trim() || cleanList(item.details || []).length);
+  });
+}

@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { DEFAULT_TEMPLATE_ID, TEMPLATE_CATALOG } from 'resume-builder-shared';
 import { templateList, templateRegistry, type TemplateId } from '@/shared/templateRegistry';
 
-const SUPPORTED_IDS: TemplateId[] = ['classic', 'modern', 'executive', 'technical', 'graduate'];
+const SUPPORTED_IDS = TEMPLATE_CATALOG.map((template) => template.id) as TemplateId[];
 
-test('template registry exposes the five supported ATS templates', () => {
-  assert.equal(templateList.length, 5);
+test('template registry exposes six supported ATS templates', () => {
+  assert.equal(templateList.length, TEMPLATE_CATALOG.length);
   const seen = new Set<string>();
   for (const template of templateList) {
     assert.ok(template.id, 'template id should not be empty');
@@ -23,3 +24,7 @@ test('template registry object keys match template ids', () => {
   }
 });
 
+test('template registry preserves shared default template metadata', () => {
+  assert.equal(DEFAULT_TEMPLATE_ID, 'classic');
+  assert.equal(templateRegistry[DEFAULT_TEMPLATE_ID].isDefault, true);
+});

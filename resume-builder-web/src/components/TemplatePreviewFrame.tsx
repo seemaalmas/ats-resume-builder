@@ -14,9 +14,17 @@ export function computePreviewScale(containerWidth: number, containerHeight: num
 
 type TemplatePreviewFrameProps = {
   children: ReactNode;
+  pageWidth?: number;
+  pageHeight?: number;
+  mode?: 'full' | 'thumbnail';
 };
 
-export function TemplatePreviewFrame({ children }: TemplatePreviewFrameProps) {
+export function TemplatePreviewFrame({
+  children,
+  pageWidth = TEMPLATE_PAGE_WIDTH,
+  pageHeight = TEMPLATE_PAGE_HEIGHT,
+  mode = 'full',
+}: TemplatePreviewFrameProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);
 
@@ -24,9 +32,9 @@ export function TemplatePreviewFrame({ children }: TemplatePreviewFrameProps) {
     const container = containerRef.current;
     if (!container) return;
     const rect = container.getBoundingClientRect();
-    const nextScale = computePreviewScale(rect.width, rect.height);
+    const nextScale = computePreviewScale(rect.width, rect.height, pageWidth, pageHeight);
     setScale((prev) => (Math.abs(prev - nextScale) > 0.001 ? nextScale : prev));
-  }, []);
+  }, [pageHeight, pageWidth]);
 
   useEffect(() => {
     updateScale();
@@ -42,10 +50,10 @@ export function TemplatePreviewFrame({ children }: TemplatePreviewFrameProps) {
   }, [updateScale]);
 
   return (
-    <div className="template-preview-frame__container" ref={containerRef}>
+    <div className="template-preview-frame__container" data-preview-frame-mode={mode} ref={containerRef}>
       <div
         className="template-preview-frame__page"
-        style={{ transform: `scale(${scale}) translateZ(0)`, width: TEMPLATE_PAGE_WIDTH, height: TEMPLATE_PAGE_HEIGHT }}
+        style={{ transform: `scale(${scale}) translateZ(0)`, width: pageWidth, height: pageHeight }}
       >
         <div className="template-preview-frame__content">{children}</div>
       </div>

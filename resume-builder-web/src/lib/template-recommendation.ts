@@ -10,10 +10,10 @@ export type TemplateRecommendation = {
 
 const ROLE_KEYWORDS: Record<string, TemplateId[]> = {
   product: ['modern'],
-  design: ['modern', 'executive'],
+  design: ['modern', 'minimal'],
   engineering: ['technical', 'modern'],
   data: ['technical'],
-  ops: ['classic'],
+  ops: ['classic', 'consultant'],
 };
 
 export function recommendTemplates(resume: ResumeDraft): TemplateRecommendation {
@@ -77,6 +77,7 @@ export function recommendTemplates(resume: ResumeDraft): TemplateRecommendation 
 
   if (experienceYears >= 8 || detection.level === 'SENIOR') {
     bump('executive', 28, 'Leadership-heavy profiles read best with impact-first sections.');
+    bump('consultant', 12);
     bump('classic', 10);
     bump('modern', 8);
   }
@@ -89,12 +90,13 @@ export function recommendTemplates(resume: ResumeDraft): TemplateRecommendation 
   if (skillCount >= 12 || (resume.certifications?.length || 0) >= 3) {
     bump('technical', 18, 'Skills-heavy profiles are easier to scan in the compact technical format.');
     bump('modern', 8);
+    bump('consultant', 6);
   }
 
   if (estimatedPages >= 3) {
     bump('classic', 16, 'Dense resumes need a straightforward ATS-first single-column format.');
   } else if (estimatedPages <= 1) {
-    bump('graduate', 8, 'Early-career resumes benefit from project-forward ordering.');
+    bump('minimal', 12, 'One-page resumes benefit from minimal formatting and tight section rhythm.');
   }
 
   for (const trait of roleTraits) {

@@ -16,7 +16,7 @@ globalThis.requestAnimationFrame =
   ((callback: FrameRequestCallback) => setTimeout(callback, 0) as unknown as number);
 
 type TestingLib = typeof import('@testing-library/react');
-type LoginPageModule = typeof import('@/app/auth/login/page');
+type LoginPageModule = typeof import('@/app/auth/login/LoginPageView');
 
 let testingLibPromise: Promise<TestingLib> | null = null;
 let loginPagePromise: Promise<LoginPageModule> | null = null;
@@ -30,7 +30,7 @@ function getTestingLib() {
 
 function getLoginPageModule() {
   if (!loginPagePromise) {
-    loginPagePromise = import('@/app/auth/login/page');
+    loginPagePromise = import('@/app/auth/login/LoginPageView');
   }
   return loginPagePromise;
 }
@@ -42,21 +42,21 @@ test.afterEach(async () => {
 
 test('login page renders phone input by default', async () => {
   const { render } = await getTestingLib();
-  const { default: LoginPage } = await getLoginPageModule();
+  const { LoginPageView } = await getLoginPageModule();
   const apiClient = {
     requestOtp: async () => ({ requestId: 'req-1' }),
     verifyOtp: async () => ({ user: { id: '1', email: 'a', fullName: 'b' }, accessToken: 'a', refreshToken: 'r' }),
     login: async () => {},
   };
 
-  const view = render(React.createElement(LoginPage, { apiClient: apiClient as any }));
+  const view = render(React.createElement(LoginPageView, { apiClient: apiClient as any }));
   const mobileInput = view.getByLabelText(/mobile number/i) as HTMLInputElement;
   assert.equal(mobileInput.id, 'otp-mobile');
 });
 
 test('request OTP button calls API', async () => {
   const { render, fireEvent, waitFor } = await getTestingLib();
-  const { default: LoginPage } = await getLoginPageModule();
+  const { LoginPageView } = await getLoginPageModule();
   const requestCalls: string[] = [];
   const apiClient = {
     requestOtp: async (mobile: string) => {
@@ -66,7 +66,7 @@ test('request OTP button calls API', async () => {
     verifyOtp: async () => ({ user: { id: '1', email: 'a', fullName: 'b' }, accessToken: 'a', refreshToken: 'r' }),
     login: async () => {},
   };
-  const view = render(React.createElement(LoginPage, { apiClient: apiClient as any }));
+  const view = render(React.createElement(LoginPageView, { apiClient: apiClient as any }));
   const mobileInput = view.getByLabelText(/mobile number/i) as HTMLInputElement;
   fireEvent.input(mobileInput, { target: { value: '9123456780' } });
   fireEvent.click(view.getByRole('button', { name: /send otp/i }));
@@ -78,7 +78,7 @@ test('request OTP button calls API', async () => {
 
 test('verify OTP calls API and navigates on success', async () => {
   const { render, fireEvent, waitFor } = await getTestingLib();
-  const { default: LoginPage } = await getLoginPageModule();
+  const { LoginPageView } = await getLoginPageModule();
   const verifyCalls: Array<{ phone: string; code: string; requestId: string }> = [];
   const apiClient = {
     requestOtp: async () => ({ requestId: 'req-7' }),
@@ -95,7 +95,7 @@ test('verify OTP calls API and navigates on success', async () => {
       return true;
     },
   };
-  const view = render(React.createElement(LoginPage, { apiClient: apiClient as any, routerOverride: routerStub }));
+  const view = render(React.createElement(LoginPageView, { apiClient: apiClient as any, routerOverride: routerStub }));
   const mobileInput = view.getByLabelText(/mobile number/i) as HTMLInputElement;
   fireEvent.input(mobileInput, { target: { value: '9123456781' } });
   fireEvent.click(view.getByRole('button', { name: /send otp/i }));
@@ -114,7 +114,7 @@ test('verify OTP calls API and navigates on success', async () => {
 
 test('legacy email login remains accessible behind toggle link', async () => {
   const { render, fireEvent, waitFor } = await getTestingLib();
-  const { default: LoginPage } = await getLoginPageModule();
+  const { LoginPageView } = await getLoginPageModule();
   const loginCalls: Array<{ email: string; password: string }> = [];
   const apiClient = {
     requestOtp: async () => ({ requestId: 'req-1' }),
@@ -132,7 +132,7 @@ test('legacy email login remains accessible behind toggle link', async () => {
     },
   };
 
-  const view = render(React.createElement(LoginPage, { apiClient: apiClient as any, routerOverride: routerStub }));
+  const view = render(React.createElement(LoginPageView, { apiClient: apiClient as any, routerOverride: routerStub }));
   fireEvent.click(view.getByRole('button', { name: /use email login \(legacy\)/i }));
   fireEvent.input(view.getByLabelText(/email/i), { target: { value: 'legacy@example.com' } });
   fireEvent.input(view.getByLabelText(/password/i), { target: { value: 'secret123' } });

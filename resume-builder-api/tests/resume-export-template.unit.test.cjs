@@ -143,6 +143,7 @@ test('generatePdf uses selected template markup and includes user resume data', 
     assert.match(rendered, /data-render-context="export"/);
     assert.match(rendered, /TEMPLATE_FINGERPRINT:modern/);
     assert.match(rendered, /Engineering Lead \| Acme Corp/);
+    assert.match(rendered, /Jan 2021 - Present/);
     assert.equal(prisma.__getState().user.pdfExportsUsed, 1);
   });
 });
@@ -157,6 +158,10 @@ test('export CSS does not force whole sections to next page', async () => {
   const rendered = await service.debugExportHtml('user-1', 'resume-1');
   assert.doesNotMatch(rendered.html, /\.ats-section\s*\{[^}]*page-break-inside:\s*avoid;/i);
   assert.match(rendered.html, /\.ats-item\s*\{[^}]*page-break-inside:\s*avoid;/i);
+  assert.match(rendered.html, /overflow-wrap:\s*anywhere/i);
+  assert.match(rendered.html, /word-break:\s*break-word/i);
+  assert.doesNotMatch(rendered.html, /\.ats-template\s*\{[^}]*display:\s*grid/i);
+  assert.doesNotMatch(rendered.html, /\.ats-template\s*\{[^}]*columns\s*:/i);
 });
 
 test('apply template update persists and export uses the persisted templateId', async () => {
@@ -191,7 +196,24 @@ test('export does not fall back to classic when resume.templateId is set', async
     assert.match(rendered, /data-template-id="executive"/);
     assert.match(rendered, /TEMPLATE_FINGERPRINT:executive/);
     assert.doesNotMatch(rendered, /TEMPLATE_FINGERPRINT:classic/);
+    assert.doesNotMatch(rendered, /Impact:\s/);
   });
+});
+
+test('executive export uses ATS section names instead of marketing labels', async () => {
+  const prisma = createInMemoryPrisma('executive');
+  const service = new ResumeService(prisma, {
+    isPaymentFeatureEnabled: async () => false,
+    isRateLimitEnabled: async () => false,
+  });
+
+  const rendered = await service.debugExportHtml('user-1', 'resume-1');
+  assert.match(rendered.html, /<h2 class="ats-upper">SUMMARY<\/h2>/);
+  assert.match(rendered.html, /<h2 class="ats-upper">SKILLS<\/h2>/);
+  assert.match(rendered.html, /<h2 class="ats-upper">EXPERIENCE<\/h2>/);
+  assert.doesNotMatch(rendered.html, /EXECUTIVE SUMMARY/i);
+  assert.doesNotMatch(rendered.html, /CORE CAPABILITIES/i);
+  assert.doesNotMatch(rendered.html, /PROFESSIONAL IMPACT/i);
 });
 
 test('switching template changes exported renderer output markers', async () => {
@@ -205,7 +227,7 @@ test('switching template changes exported renderer output markers', async () => 
     const pdfBuffer = await service.generatePdf('user-1', 'resume-1');
     const rendered = pdfBuffer.toString('utf8');
     assert.match(rendered, /TEMPLATE_FINGERPRINT:modern/);
-    assert.match(rendered, /Professional Summary/);
+    assert.match(rendered, /<h2>Summary<\/h2>/);
   });
 
   await service.update('user-1', 'resume-1', { templateId: 'graduate' });
@@ -215,7 +237,7 @@ test('switching template changes exported renderer output markers', async () => 
     const rendered = pdfBuffer.toString('utf8');
     assert.match(rendered, /TEMPLATE_FINGERPRINT:graduate/);
     assert.match(rendered, /<h2>Projects<\/h2>/);
-    assert.ok(rendered.indexOf('<h2>Projects</h2>') < rendered.indexOf('<h2>Experience</h2>'));
+    assert.ok(rendered.indexOf('<h2>Experience</h2>') < rendered.indexOf('<h2>Projects</h2>'));
   });
 });
 

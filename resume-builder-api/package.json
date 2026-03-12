@@ -20,6 +20,7 @@
     "@nestjs/passport": "latest",
     "@nestjs/platform-express": "latest",
     "@prisma/client": "5.22.0",
+    "@upstash/redis": "^1.36.3",
     "bcryptjs": "latest",
     "mammoth": "^1.11.0",
     "passport": "latest",

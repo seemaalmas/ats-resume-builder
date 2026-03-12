@@ -1,3 +1,4 @@
+import { normalizeResumeForAts } from 'resume-builder-shared';
 import type { Resume, ResumeImportResult, UploadResumeResponse } from './api';
 import {
   getEmptyResumeDraft,
@@ -68,6 +69,7 @@ type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 export type SessionStorageLike = StorageLike;
 
 export const PENDING_UPLOAD_SESSION_KEY = 'resume-builder.pending-upload.v1';
+export const ACTIVE_RESUME_SESSION_KEY = 'resume-builder.active-resume-id.v1';
 export const REQUIRED_FLOW_SEQUENCE: SectionType[] = ['contact', 'summary', 'experience', 'education', 'skills'];
 
 export function buildEditorRoute(flow: 'upload' | 'review' | 'scratch', template = '') {
@@ -86,10 +88,12 @@ export function buildReviewAtsRoute(template = '', resumeId = '') {
   return query ? `/resume/review?${query}` : '/resume/review';
 }
 
-export function buildTemplateSelectionRoute(resumeId = '') {
+export function buildTemplateSelectionRoute(resumeId = '', template = '') {
   const params = new URLSearchParams();
   const cleanResumeId = resumeId.trim();
+  const cleanTemplate = template.trim();
   if (cleanResumeId) params.set('resumeId', cleanResumeId);
+  if (cleanTemplate) params.set('template', cleanTemplate);
   const query = params.toString();
   return query ? `/resume/template?${query}` : '/resume/template';
 }
@@ -385,6 +389,36 @@ export function savePendingUploadSession(session: PendingUploadSession, storage?
   return true;
 }
 
+export function persistActiveResumeSelection(resumeId: string, storage?: StorageLike) {
+  const target = resolveStorage(storage);
+  if (!target) return false;
+  const nextResumeId = String(resumeId || '').trim();
+  if (!nextResumeId) {
+    target.removeItem(ACTIVE_RESUME_SESSION_KEY);
+    return false;
+  }
+  target.setItem(ACTIVE_RESUME_SESSION_KEY, nextResumeId);
+  return true;
+}
+
+export function readActiveResumeSelection(storage?: StorageLike) {
+  const target = resolveStorage(storage);
+  if (!target) return '';
+  return String(target.getItem(ACTIVE_RESUME_SESSION_KEY) || '').trim();
+}
+
+export function clearActiveResumeSelection(storage?: StorageLike) {
+  const target = resolveStorage(storage);
+  if (!target) return;
+  target.removeItem(ACTIVE_RESUME_SESSION_KEY);
+}
+
+export function resolveCurrentSessionResumeId(resumeId = '', storage?: StorageLike) {
+  const explicitResumeId = String(resumeId || '').trim();
+  void storage;
+  return explicitResumeId;
+}
+
 export function readPendingUploadSession(storage?: StorageLike): PendingUploadSession | null {
   const target = resolveStorage(storage);
   if (!target) return null;
@@ -486,7 +520,7 @@ export function buildResumePayload(resume: ResumeDraft, sections: SectionState[]
     softSkills: resume.softSkills || [],
     languages: resume.languages || [],
   });
-  return {
+  const payload = {
     title: resume.title.trim() || resume.contact.fullName.trim() || 'Resume',
     contact: enabled.has('contact') ? trimmedContact : undefined,
     summary: enabled.has('summary') ? resume.summary.trim() : '',
@@ -536,6 +570,7 @@ export function buildResumePayload(resume: ResumeDraft, sections: SectionState[]
       : [],
     templateId: resume.templateId?.trim() || undefined,
   };
+  return normalizeResumeForAts(payload) as typeof payload;
 }
 
 export function buildResumePreview(resume: ResumeDraft): ResumeImportResult {
@@ -545,7 +580,7 @@ export function buildResumePreview(resume: ResumeDraft): ResumeImportResult {
     softSkills: resume.softSkills || [],
     languages: resume.languages || [],
   });
-  return {
+  const preview: ResumeImportResult = {
     title: resume.title.trim(),
     contact: sanitizeContact(resume.contact),
     summary: resume.summary.trim(),
@@ -592,6 +627,7 @@ export function buildResumePreview(resume: ResumeDraft): ResumeImportResult {
       }))
       .filter((item) => item.name),
   };
+  return normalizeResumeForAts(preview);
 }
 
 function normalizeDateForPayload(value?: string) {

@@ -90,6 +90,13 @@ export class SettingsService implements OnModuleInit {
     return Boolean(setting?.paymentFeatureEnabled);
   }
 
+  async areProductFlowRestrictionsEnabled(): Promise<boolean> {
+    if (!this.resolveProductFlowRestrictionsEnabled()) {
+      return false;
+    }
+    return this.isPaymentFeatureEnabled();
+  }
+
   async setPaymentFeatureEnabled(enabled: boolean): Promise<PaymentFeatureSettingState> {
     const updated = await this.prisma.appSetting.upsert({
       where: { id: APP_SETTING_SINGLETON_ID },
@@ -115,6 +122,14 @@ export class SettingsService implements OnModuleInit {
       return false;
     }
     return false;
+  }
+
+  private resolveProductFlowRestrictionsEnabled() {
+    const raw = process.env.PRODUCT_FLOW_RESTRICTIONS_ENABLED;
+    if (raw == null || String(raw).trim() === '') {
+      return false;
+    }
+    return parseBoolean(raw, false);
   }
 
   private isForceDisableRateLimit() {

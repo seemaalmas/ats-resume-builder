@@ -4,8 +4,9 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ResumeImportResult } from 'resume-builder-shared';
 import ClassicATS from '@/components/templates/ClassicATS';
+import ConsultantClean from '@/components/templates/ConsultantClean';
 import ExecutiveImpact from '@/components/templates/ExecutiveImpact';
-import GraduateStarter from '@/components/templates/GraduateStarter';
+import MinimalClean from '@/components/templates/MinimalClean';
 import ModernProfessional from '@/components/templates/ModernProfessional';
 import TechnicalCompact from '@/components/templates/TechnicalCompact';
 
@@ -54,23 +55,39 @@ test('Classic ATS template renders summary and experience', () => {
 
 test('Modern Professional template renders divider sections', () => {
   const markup = renderToStaticMarkup(React.createElement(ModernProfessional, { resumeData }));
-  assert(markup.includes('Professional Summary'));
+  assert(markup.includes('Summary'));
   assert(markup.includes('Skills'));
+  assert(markup.indexOf('<h2>Summary</h2>') < markup.indexOf('<h2>Skills</h2>'));
+  assert(markup.indexOf('<h2>Skills</h2>') < markup.indexOf('<h2>Experience</h2>'));
 });
 
-test('Executive Impact template renders uppercase leadership sections', () => {
+test('Executive Impact template uses ATS section names and no legacy impact prefixes', () => {
   const markup = renderToStaticMarkup(React.createElement(ExecutiveImpact, { resumeData }));
-  assert(markup.includes('EXECUTIVE SUMMARY'));
-  assert(markup.includes('PROFESSIONAL IMPACT'));
+  assert(markup.includes('SUMMARY'));
+  assert(markup.includes('SKILLS'));
+  assert(markup.includes('EXPERIENCE'));
+  assert(!markup.includes('EXECUTIVE SUMMARY'));
+  assert(!markup.includes('PROFESSIONAL IMPACT'));
+  assert(!markup.includes('Impact:'), 'Executive template should not prefix each bullet with "Impact:"');
 });
 
 test('Technical Compact template renders grouped skills', () => {
   const markup = renderToStaticMarkup(React.createElement(TechnicalCompact, { resumeData }));
-  assert(markup.includes('Skill Stack'));
+  assert(markup.includes('<h2>Skills</h2>'));
   assert(markup.includes('Technical:'));
 });
 
-test('Graduate Starter template keeps projects before experience', () => {
-  const markup = renderToStaticMarkup(React.createElement(GraduateStarter, { resumeData }));
-  assert(markup.indexOf('<h2>Projects</h2>') < markup.indexOf('<h2>Experience</h2>'));
+test('Minimal Clean template keeps ATS section order with experience before projects', () => {
+  const markup = renderToStaticMarkup(React.createElement(MinimalClean, { resumeData }));
+  assert(markup.indexOf('<h2>Summary</h2>') < markup.indexOf('<h2>Skills</h2>'));
+  assert(markup.indexOf('<h2>Skills</h2>') < markup.indexOf('<h2>Experience</h2>'));
+  assert(markup.indexOf('<h2>Experience</h2>') < markup.indexOf('<h2>Projects</h2>'));
+});
+
+test('Consultant Clean template keeps ATS naming and single-column sections', () => {
+  const markup = renderToStaticMarkup(React.createElement(ConsultantClean, { resumeData }));
+  assert(markup.includes('<h2>Summary</h2>'));
+  assert(markup.includes('<h2>Skills</h2>'));
+  assert(markup.includes('<h2>Experience</h2>'));
+  assert(!markup.includes('Impact:'), 'Consultant template should not force legacy prefixes');
 });

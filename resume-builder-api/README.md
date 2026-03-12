@@ -36,6 +36,9 @@ node dist/main.js
 - `NODE_ENV`
 - `CORS_ORIGIN` (default: http://localhost:3000)
 - `DATABASE_URL`
+- `PRISMA_CONNECTION_LIMIT` (optional)
+- `PRISMA_POOL_TIMEOUT_SECONDS` (optional)
+- `PRISMA_CONNECT_TIMEOUT_SECONDS` (optional)
 - `JWT_SECRET`
 - `JWT_EXPIRES_IN`
 - `JWT_REFRESH_SECRET`
@@ -51,6 +54,7 @@ node dist/main.js
 - `ADMIN_USER_IDS` (comma-separated)
 - `ADMIN_MOBILES` (comma-separated normalized mobile numbers for admin access)
 - `SMS_GATEWAY_URL` (URL where the SMS gateway listens, defaults to http://localhost:7071)
+- `TWILIO_HTTP_TIMEOUT_MS` (default: 10000)
 - `RESUME_CREATION_RATE_LIMIT_DEFAULT` (default fallback if DB setting is missing)
 - `FORCE_DISABLE_RATE_LIMIT` (`true` hard-disables resume create rate limiting)
 
@@ -64,8 +68,11 @@ node dist/main.js
 ## Database URL Format
 - Use `postgresql://` or `postgres://` for `DATABASE_URL`.
 - Do not use `prisma://` unless Prisma Accelerate/Data Proxy is intentionally configured.
+- For Supabase/direct managed Postgres, include SSL and pool tuning params to reduce `P2024` pool timeouts.
 - Local example:
   - `DATABASE_URL=postgresql://postgres:postgres@localhost:5432/resume_builder?schema=public`
+- Supabase example:
+  - `DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/postgres?sslmode=require&connection_limit=10&pool_timeout=30&connect_timeout=10`
 
 ## Endpoints
 - `GET /health`

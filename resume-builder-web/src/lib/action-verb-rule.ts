@@ -89,6 +89,7 @@ const NON_VERB_STARTERS = new Set([
 ]);
 
 const BULLET_PREFIX_RE = /^\s*(?:[•◦▪●*+-]+|\d{1,3}[.)]|[a-z][.)])\s*/i;
+const BULLET_LABEL_PREFIX_RE = /^(impact|achievement|result|highlights?|accomplishment)s?:\s*/i;
 const STRONG_VERB_SET = buildStrongVerbSet();
 
 export type ExperienceBulletEntry = {
@@ -194,6 +195,9 @@ export function normalizeBulletText(input: string) {
   let value = String(input || '');
   while (BULLET_PREFIX_RE.test(value)) {
     value = value.replace(BULLET_PREFIX_RE, '');
+  }
+  while (BULLET_LABEL_PREFIX_RE.test(value.trimStart())) {
+    value = value.trimStart().replace(BULLET_LABEL_PREFIX_RE, '');
   }
   return value
     .replace(/^[`"'([{]+/, '')

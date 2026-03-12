@@ -27,14 +27,30 @@ export function parseResumeText(rawText: string): ParsedResumeText {
 }
 
 export function normalizeText(text: string) {
-  return text
+  const canonical = text
     .replace(/\u0000/g, '')
     .replace(/[\u2013\u2014]/g, '-')
     .replace(/â€¢|â—¦|â–ª|â—/g, '- ')
     .replace(/[\u2022\u25e6\u25aa\u25cf\u00b7]/g, '- ')
     .replace(/\r/g, '')
+    .split('\n')
+    .map((line) => normalizeLegacyBulletPrefix(line))
+    .join('\n');
+
+  return canonical
     .replace(/\n{3,}/g, '\n\n')
     .replace(/[ \t]{2,}/g, ' ')
     .trim();
+}
+
+const LEGACY_BULLET_PREFIX_RE = /^\s*(?:[-*•·]+|\d{1,3}[.)]|[a-z][.)])?\s*(impact|achievement|result|highlights?|accomplishment)s?:\s*/i;
+
+function normalizeLegacyBulletPrefix(line: string) {
+  const raw = String(line || '');
+  if (!LEGACY_BULLET_PREFIX_RE.test(raw)) return raw;
+  const stripped = raw.replace(LEGACY_BULLET_PREFIX_RE, '').trim();
+  if (!stripped) return '';
+  // Preserve bullet semantics so highlights continue to attach to the active role.
+  return `- ${stripped}`;
 }
 

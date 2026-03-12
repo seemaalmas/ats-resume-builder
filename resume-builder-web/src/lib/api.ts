@@ -179,6 +179,34 @@ const storageKeys = {
   sessionLastActivityAt: 'sessionLastActivityAt',
 };
 
+export type DriveSessionResponse = {
+  driveConsentAsked: boolean;
+  googleConnected: boolean;
+  sessionExpiresAt: string | null;
+};
+
+export type DriveFileItem = {
+  id: string;
+  name: string;
+  mimeType: string;
+  modifiedTime?: string;
+  size?: string;
+};
+
+export type DriveFilesResponse = {
+  files: DriveFileItem[];
+};
+
+export type DriveImportResponse = {
+  persisted: false;
+  file: {
+    fileId: string;
+    fileName: string;
+    mimeType: string;
+  };
+  resume: ResumeImportResult;
+};
+
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const REFRESH_GRACE_MS = 2 * 60 * 1000;
 const ACTIVITY_WRITE_THROTTLE_MS = 5_000;
@@ -256,6 +284,14 @@ function clearAuthTokens() {
   localStorage.removeItem(storageKeys.userEmail);
   localStorage.removeItem(storageKeys.sessionExpiresAt);
   localStorage.removeItem(storageKeys.sessionLastActivityAt);
+  try {
+    window.sessionStorage.removeItem('resume-builder.active-resume-id.v1');
+    window.sessionStorage.removeItem('dashboard.imported-resume.v1');
+    window.sessionStorage.removeItem('dashboard.last-activity.v1');
+    window.sessionStorage.removeItem('resume-builder.pending-upload.v1');
+  } catch {
+    // Ignore sessionStorage access issues in restricted environments.
+  }
   notifyAuthStateChanged();
 }
 
@@ -619,6 +655,30 @@ async function upload<T>(path: string, formData: FormData): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function requestWithCredentials<T>(path: string, options: RequestInit = {}, retry = true): Promise<T> {
+  await ensureSessionActive();
+
+  const res = await fetch(`${baseUrl}${path}`, {
+    ...options,
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+      ...(getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : {}),
+    },
+  });
+
+  if (res.status === 401 && retry) {
+    const refreshed = await refreshSilently();
+    if (refreshed) {
+      return requestWithCredentials<T>(path, options, false);
+    }
+  }
+
+  if (!res.ok) throw new ApiRequestError(await readApiErrorDetails(res, 'Request failed'));
+  return res.json() as Promise<T>;
+}
+
 export async function refresh(payload: RefreshPayload, options: { silent?: boolean } = {}): Promise<AuthResponse> {
   const res = await fetch(`${baseUrl}/auth/refresh`, {
     method: 'POST',
@@ -666,6 +726,49 @@ export const api = {
   logout: async () => {
     await request('/auth/logout', { method: 'POST' });
     clearAuthTokens();
+  },
+
+  getGoogleStartUrl: () =>
+    requestWithCredentials<{ url: string }>('/auth/google/start', {
+      method: 'GET',
+    }),
+
+  getDriveSession: () =>
+    requestWithCredentials<DriveSessionResponse>('/drive/session', {
+      method: 'GET',
+    }),
+
+  setDriveConsent: (payload: { decision: 'accepted' | 'declined' }) =>
+    requestWithCredentials<DriveSessionResponse>('/drive/consent', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  listDriveFiles: () =>
+    requestWithCredentials<DriveFilesResponse>('/drive/files', {
+      method: 'GET',
+    }),
+
+  importDriveFile: (fileId: string) =>
+    requestWithCredentials<DriveImportResponse>('/drive/import', {
+      method: 'POST',
+      body: JSON.stringify({ fileId }),
+    }),
+
+  extendSession: async () => {
+    const refreshToken = getRefreshToken();
+    const userId = getUserId();
+    if (!refreshToken || !userId) {
+      throw new Error('No active session.');
+    }
+    const auth = await refresh({ userId, refreshToken }, { silent: true });
+    setAuthTokens(auth);
+    try {
+      await requestWithCredentials<{ ok: boolean }>('/drive/session/extend', { method: 'POST' });
+    } catch {
+      // Ignore drive-session extension failures when primary auth extension succeeds.
+    }
+    return { ok: true };
   },
 
   getFeatureFlags: () => request<FeatureFlagsResponse>('/settings/public'),

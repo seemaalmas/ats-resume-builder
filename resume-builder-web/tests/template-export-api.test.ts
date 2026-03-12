@@ -33,15 +33,15 @@ test('template selection page persists selected templateId on save', () => {
 
 test('dashboard apply persists templateId before template-route navigation', () => {
   const source = readFileSync(
-    path.join(__dirname, '..', 'app', 'dashboard', 'page.tsx'),
+    path.join(__dirname, '..', 'app', 'dashboard', 'DashboardPageView.tsx'),
     'utf-8',
   );
   assert(
-    source.includes('api.updateResume(previewResume.id, { templateId })'),
+    source.includes('apiClient.updateResume(activeResume.id, { templateId })'),
     'Dashboard apply must persist templateId using updateResume',
   );
   assert(
-    source.includes('router.push(buildTemplateSelectionRoute(previewResume.id))'),
+    source.includes('router.push(buildTemplateSelectionRoute(activeResume.id))'),
     'Dashboard apply should navigate after persistence',
   );
 });

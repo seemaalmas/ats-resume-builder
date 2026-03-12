@@ -11,6 +11,7 @@ import {
   buildReviewAtsRoute,
   buildTemplateSelectionRoute,
   buildResumePayload,
+  clearActiveResumeSelection,
   clearPendingUploadSession,
   consumePendingUploadSession,
   createUploadSummary,
@@ -18,7 +19,10 @@ import {
   canContinueToAts,
   detectExperienceLevelFromResume,
   getNavigationGateState,
+  persistActiveResumeSelection,
+  readPendingUploadSession,
   resolveEditorUploadNavigation,
+  resolveCurrentSessionResumeId,
   resumeFromApi as resumeFromImportedApi,
   type UploadSummary as UploadSummaryState,
 } from '@/src/lib/resume-flow';
@@ -225,12 +229,18 @@ export default function ResumeEditor() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const idParam = searchParams.get('id') || '';
+  const requestedResumeId = searchParams.get('id') || '';
   const templateParam = searchParams.get('template') || '';
   const normalizedTemplateParam = String(templateParam || '').trim();
   const flowParam = (searchParams.get('flow') || '').trim().toLowerCase();
   const isReviewAtsPage = pathname === '/resume/review';
-  const [resumeId, setResumeId] = useState(idParam);
+  const isReviewFlow = isReviewAtsPage || flowParam === 'upload' || flowParam === 'review';
+  const hasPendingReviewUpload = !requestedResumeId && isReviewFlow && Boolean(readPendingUploadSession());
+  const shouldIgnoreSessionResume = flowParam === 'scratch' || hasPendingReviewUpload;
+  const effectiveResumeId = shouldIgnoreSessionResume
+    ? String(requestedResumeId || '').trim()
+    : resolveCurrentSessionResumeId(requestedResumeId);
+  const [resumeId, setResumeId] = useState(effectiveResumeId);
   const resume = useResumeStore((state) => state.resume as unknown as ResumeDraft);
   const uploadedFileName = useResumeStore((state) => state.uploadedFileName);
   const atsReview = useResumeStore((state) => state.atsReview);
@@ -288,7 +298,6 @@ export default function ResumeEditor() {
   const pendingTemplateSaveRef = useRef<Promise<void> | null>(null);
   const templateSaveRunRef = useRef(0);
   const sectionDebugEnabled = process.env.NEXT_PUBLIC_SECTION_DEBUG === '1';
-  const isReviewFlow = isReviewAtsPage || flowParam === 'upload' || flowParam === 'review';
   const resumeQuotaBlocked = paymentFeatureEnabled && quotaState.resumeBlocked;
   const atsQuotaBlocked = paymentFeatureEnabled && quotaState.atsBlocked;
   const quotaMessage = paymentFeatureEnabled ? quotaState.message : '';
@@ -309,16 +318,17 @@ export default function ResumeEditor() {
   }, [logSectionChange]);
 
   useEffect(() => {
-    if (!idParam && isReviewFlow) {
-      return;
-    }
+    setResumeId(effectiveResumeId);
+  }, [effectiveResumeId]);
+
+  useEffect(() => {
     resetResumeStore();
     setImportNotes('');
     setImportRoleLevel('');
     setUploadSummary(null);
     setIsImportedMode(false);
     setActiveStepIndex(0);
-  }, [idParam, templateParam, flowParam, isReviewFlow, resetResumeStore]);
+  }, [effectiveResumeId, flowParam, resetResumeStore, templateParam]);
 
   useEffect(() => {
     setRecentCompanies(readRecentCompanies());
@@ -336,7 +346,8 @@ export default function ResumeEditor() {
   }, [paymentFeatureEnabled]);
 
   useEffect(() => {
-    if (!isReviewAtsPage || typeof window === 'undefined') return;
+    if (!isReviewAtsPage) return;
+    const win: any = globalThis;
     const editor = editorRef.current;
     if (!editor) return;
     const enabledSections = new Set(sections.filter((s) => s.enabled).map((s) => s.type));
@@ -388,31 +399,35 @@ export default function ResumeEditor() {
       return () => observer.disconnect();
     };
 
-    if ('IntersectionObserver' in window) {
+    if ('IntersectionObserver' in win) {
       const cleanup = observeSections();
       return cleanup;
     }
 
-    let scrollTimer: ReturnType<typeof setTimeout> | null = null;
+    let scrollTimer: number | null = null;
     const checkScroll = () => {
       scrollTimer = null;
-      const viewportHeight = window.innerHeight || 0;
-      let candidate: { type: SectionType; top: number } | null = null;
-      let pastCandidate: { type: SectionType; top: number } | null = null;
+      const viewportHeight = win.innerHeight || 0;
+      let candidateType: SectionType | null = null;
+      let candidateTop = Number.POSITIVE_INFINITY;
+      let pastCandidateType: SectionType | null = null;
+      let pastCandidateTop = Number.NEGATIVE_INFINITY;
       trackedSections.forEach(({ type, element }) => {
         const rect = element.getBoundingClientRect();
         if (rect.top >= 0 && rect.top <= viewportHeight * 0.6) {
-          if (!candidate || rect.top < candidate.top) {
-            candidate = { type, top: rect.top };
+          if (rect.top < candidateTop) {
+            candidateType = type;
+            candidateTop = rect.top;
           }
         }
         if (rect.top < 0) {
-          if (!pastCandidate || rect.top > pastCandidate.top) {
-            pastCandidate = { type, top: rect.top };
+          if (rect.top > pastCandidateTop) {
+            pastCandidateType = type;
+            pastCandidateTop = rect.top;
           }
         }
       });
-      const next = candidate?.type ?? pastCandidate?.type ?? trackedSections[0].type;
+      const next = candidateType ?? pastCandidateType ?? trackedSections[0]?.type;
       if (!next) return;
       if (shouldSkipForEditing()) return;
       clearEditingSectionIfStale();
@@ -420,20 +435,21 @@ export default function ResumeEditor() {
     };
     const handleScroll = () => {
       if (scrollTimer) return;
-      scrollTimer = window.setTimeout(checkScroll, 120);
+      scrollTimer = win.setTimeout(checkScroll, 120);
     };
     checkScroll();
-    window.addEventListener('scroll', handleScroll, { passive: true });
+    win.addEventListener('scroll', handleScroll, { passive: true });
     return () => {
-      window.removeEventListener('scroll', handleScroll);
+      win.removeEventListener('scroll', handleScroll);
       if (scrollTimer) {
-        clearTimeout(scrollTimer);
+        win.clearTimeout(scrollTimer);
       }
     };
   }, [isReviewAtsPage, sections, setActiveSection]);
 
   useEffect(() => {
-    if (!isReviewAtsPage || typeof window === 'undefined') return;
+    if (!isReviewAtsPage) return;
+    const win: any = globalThis;
     const editor = editorRef.current;
     if (!editor) return;
     const handleEditorInteraction = (event: Event) => {
@@ -453,7 +469,7 @@ export default function ResumeEditor() {
       if (focusClearTimerRef.current) {
         clearTimeout(focusClearTimerRef.current);
       }
-      focusClearTimerRef.current = window.setTimeout(() => {
+      focusClearTimerRef.current = win.setTimeout(() => {
         editingSectionRef.current = null;
         lastFocusTsRef.current = 0;
       }, SECTION_FOCUS_CLEAR_MS);
@@ -485,23 +501,25 @@ export default function ResumeEditor() {
       setMessage('Please sign in to edit resumes.');
       return;
     }
-    if (idParam) {
-      api.getResume(idParam)
+    if (effectiveResumeId) {
+      api.getResume(effectiveResumeId)
         .then((r) => {
           setResumeId(r.id);
+          persistActiveResumeSelection(r.id);
           const loadedResume = resumeFromImportedApi(r);
           setResume(loadedResume);
         })
         .catch((err) => setMessage(err instanceof Error ? err.message : 'Failed to load resume'));
       return;
     }
-  }, [idParam, normalizedTemplateParam]);
+  }, [effectiveResumeId, normalizedTemplateParam]);
 
   useEffect(() => {
-    if (idParam) return;
+    if (effectiveResumeId) return;
     if (isReviewFlow) {
       const pending = consumePendingUploadSession();
       if (pending) {
+        clearActiveResumeSelection();
         setResume(() => pending.resume);
         setImportNotes(pending.importNotes || '');
         setImportRoleLevel(pending.roleLevel || '');
@@ -518,32 +536,15 @@ export default function ResumeEditor() {
         return;
       }
 
-      const storedResume = useResumeStore.getState().resume as ResumeDraft;
-      if (hasResumeDraftContent(storedResume)) {
-        const restoredDetection = detectExperienceLevelFromResume(storedResume as any);
-        const restoredSummary = createUploadSummary(storedResume as any, restoredDetection.level);
-        setResume(() => storedResume);
-        setImportNotes('');
-        setUploadSummary(restoredSummary);
-        setImportRoleLevel(restoredSummary.roleLevel || '');
-        setIsImportedMode(true);
-        const targetStep = REQUIRED_FLOW_SEQUENCE.indexOf(restoredSummary.reviewTarget);
-        const nextStepIndex = targetStep >= 0 ? targetStep : 0;
-        setActiveStepIndex(nextStepIndex);
-        requestAnimationFrame(() => scrollToSection(restoredSummary.reviewTarget as SectionType));
-        setMessage(`Upload restored. Review ${SECTION_LABELS[restoredSummary.reviewTarget as SectionType]} before moving ahead.`);
-        resetAtsReview();
-        markDirty();
-        return;
-      }
-      if (isReviewAtsPage) {
-        setMessage('Loading your latest resume for Review & ATS...');
-      } else {
-        setMessage('No uploaded resume data found. Upload a file to continue.');
-      }
+      setMessage(
+        isReviewAtsPage
+          ? 'Select a saved resume or upload a new one to continue to Review & ATS.'
+          : 'Select a saved resume or upload a new one to continue.',
+      );
       return;
     }
     if (flowParam === 'scratch') {
+      clearActiveResumeSelection();
       clearPendingUploadSession();
       const scratch = createScratchEditorState();
       setResume(() => scratch.resume as ResumeDraft);
@@ -556,44 +557,7 @@ export default function ResumeEditor() {
       setActiveStepIndex(0);
       setMessage('');
     }
-  }, [idParam, flowParam, isReviewAtsPage, isReviewFlow, resetAtsReview, setUploadedFileName]);
-
-  useEffect(() => {
-    if (!isReviewAtsPage || idParam) return;
-    if (!getAccessToken()) return;
-    const storedResume = useResumeStore.getState().resume as ResumeDraft;
-    if (hasResumeDraftContent(storedResume)) return;
-    let cancelled = false;
-    api.listResumes()
-      .then((resumes) => {
-        if (cancelled) return;
-        const latest = resumes[0];
-        if (!latest) {
-          setMessage('No resume found. Upload from Start or create one first.');
-          return;
-        }
-        const hydrated = resumeFromImportedApi(latest) as ResumeDraft;
-        setResumeId(latest.id);
-        setResumeStore(hydrated as any);
-        setImportNotes('');
-        const detection = detectExperienceLevelFromResume(hydrated as any);
-        const hydratedSummary = createUploadSummary(hydrated as any, detection.level);
-        setImportRoleLevel(hydratedSummary.roleLevel);
-        setUploadSummary(hydratedSummary);
-        setIsImportedMode(false);
-        resetAtsReview();
-        const targetStep = REQUIRED_FLOW_SEQUENCE.indexOf(hydratedSummary.reviewTarget);
-        if (targetStep >= 0) setActiveStepIndex(targetStep);
-        setMessage('Loaded your latest resume for Review & ATS.');
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setMessage(err instanceof Error ? err.message : 'Failed to load resume for review.');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [idParam, isReviewAtsPage, resetAtsReview, setResumeStore]);
+  }, [effectiveResumeId, flowParam, isReviewAtsPage, isReviewFlow, resetAtsReview, setUploadedFileName]);
 
   const experienceValidation = useMemo(
     () => validateExperienceEntries(resume.experience as any),
@@ -929,6 +893,7 @@ export default function ResumeEditor() {
         result = await api.createResume(payload);
         setResumeId(result.id);
       }
+      persistActiveResumeSelection(result.id);
       setStatus('saved');
       dirtyRef.current = false;
       setLastSavedAt(new Date().toLocaleTimeString());

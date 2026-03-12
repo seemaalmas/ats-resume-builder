@@ -14,6 +14,8 @@ test('normalizes bullets with symbols and numbering', () => {
   assert.equal(normalizeBulletText('\u2022 Built a release pipeline'), 'Built a release pipeline');
   assert.equal(normalizeBulletText('- Implemented SSR rendering'), 'Implemented SSR rendering');
   assert.equal(normalizeBulletText('1. Led platform migration'), 'Led platform migration');
+  assert.equal(normalizeBulletText('Impact: Led platform migration'), 'Led platform migration');
+  assert.equal(normalizeBulletText('- Achievement: Built SSR rendering'), 'Built SSR rendering');
 });
 
 test('weak starter detection rejects responsible/worked starters', () => {

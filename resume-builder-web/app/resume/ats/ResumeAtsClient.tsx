@@ -3,15 +3,18 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { api, type AtsScoreResult } from '@/src/lib/api';
+import { persistActiveResumeSelection, resolveCurrentSessionResumeId } from '@/src/lib/resume-flow';
+import { buildReviewAtsSuggestionSections } from '@/src/lib/review-ats';
 
 export default function ResumeAtsClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const resumeId = (searchParams.get('id') || '').trim();
+  const resumeId = resolveCurrentSessionResumeId((searchParams.get('id') || '').trim());
   const [jdText, setJdText] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [score, setScore] = useState<AtsScoreResult | null>(null);
+  const suggestionSections = buildReviewAtsSuggestionSections(score);
 
   const runScore = useCallback(async () => {
     if (!resumeId) return;
@@ -28,6 +31,11 @@ export default function ResumeAtsClient() {
   }, [resumeId, jdText]);
 
   useEffect(() => {
+    if (!resumeId) return;
+    persistActiveResumeSelection(resumeId);
+  }, [resumeId]);
+
+  useEffect(() => {
     runScore().catch(() => undefined);
   }, [runScore]);
 
@@ -36,7 +44,7 @@ export default function ResumeAtsClient() {
       <main className="grid">
         <section className="card col-12">
           <h2>ATS Review</h2>
-          <p className="small">No resume id found. Open ATS from the editor using Continue to ATS.</p>
+          <p className="small">Select a saved resume or upload a new one to run ATS.</p>
           <button className="btn" onClick={() => router.push('/resume')}>Back to Editor</button>
         </section>
       </main>
@@ -67,7 +75,7 @@ export default function ResumeAtsClient() {
           style={{ minHeight: 120 }}
           value={jdText}
           onChange={(e) => setJdText(e.target.value)}
-          placeholder="Paste job description for keyword matching"
+          placeholder="Paste a job description or list target roles for ATS matching"
         />
 
         {error && (
@@ -91,11 +99,32 @@ export default function ResumeAtsClient() {
             </ul>
 
             <h4 style={{ marginBottom: 6 }}>Suggestions</h4>
-            <ul>
-              {score.improvementSuggestions.length
-                ? score.improvementSuggestions.map((item, idx) => <li key={`suggestion-${idx}`}>{item}</li>)
-                : <li>No major suggestions.</li>}
-            </ul>
+            {suggestionSections.length ? suggestionSections.map((section, idx) => (
+              <div key={`suggestion-section-${idx}`} style={{ marginBottom: idx === suggestionSections.length - 1 ? 0 : 16 }}>
+                <h5 style={{ marginBottom: 6 }}>{section.title}</h5>
+                {section.body && (
+                  <p className="small" style={{ marginTop: 0, marginBottom: 8 }}>{section.body}</p>
+                )}
+                {section.actionText && (
+                  <p className="small" style={{ marginTop: 0, marginBottom: 8 }}>
+                    <strong>{section.actionText}</strong>
+                  </p>
+                )}
+                {section.items.length > 0 && (
+                  <ul style={{ marginTop: 0 }}>
+                    {section.items.map((item, itemIdx) => <li key={`section-item-${idx}-${itemIdx}`}>{item}</li>)}
+                  </ul>
+                )}
+                {section.examples?.length ? (
+                  <>
+                    <p className="small" style={{ marginBottom: 6 }}>Examples</p>
+                    <ul style={{ marginTop: 0 }}>
+                      {section.examples.map((item, itemIdx) => <li key={`section-example-${idx}-${itemIdx}`}>{item}</li>)}
+                    </ul>
+                  </>
+                ) : null}
+              </div>
+            )) : <p className="small">No major suggestions.</p>}
           </div>
         )}
       </section>

@@ -5,7 +5,7 @@ import ResumeReviewEmbedPreview from './ResumeReviewEmbedPreview';
 export const dynamic = 'force-dynamic';
 
 type ResumeReviewPageProps = {
-  searchParams?: Record<string, string | string[] | undefined>;
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
 
 function readSearchParam(value: string | string[] | undefined) {
@@ -13,14 +13,15 @@ function readSearchParam(value: string | string[] | undefined) {
   return value || '';
 }
 
-export default function ResumeReviewPage({ searchParams }: ResumeReviewPageProps) {
-  const embed = readSearchParam(searchParams?.embed) === '1';
+export default async function ResumeReviewPage({ searchParams }: ResumeReviewPageProps) {
+  const params = (await searchParams) || {};
+  const embed = readSearchParam(params.embed) === '1';
   if (embed) {
     return (
       <ResumeReviewEmbedPreview
-        templateId={readSearchParam(searchParams?.template)}
-        resumeId={readSearchParam(searchParams?.id)}
-        mode={readSearchParam(searchParams?.mode)}
+        templateId={readSearchParam(params.template)}
+        resumeId={readSearchParam(params.id)}
+        mode={readSearchParam(params.mode)}
       />
     );
   }

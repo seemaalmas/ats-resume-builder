@@ -11,7 +11,7 @@ import { rateLimitOrThrow } from '../limits/rate-limit';
 import { mapParsedResume, parseResumeText } from 'resume-intelligence';
 import type { ParsedResumeText } from 'resume-intelligence';
 import { sanitizeImportedResume } from './import-sanitizer';
-import { ACTION_VERB_REQUIRED_RATIO, analyzeActionVerbRule, type ActionVerbFailure } from './action-verb-rule';
+import { ACTION_VERB_REQUIRED_RATIO, analyzeActionVerbRule, normalizeBulletText, type ActionVerbFailure } from './action-verb-rule';
 import { SettingsService } from '../settings/settings.service';
 const KNOWN_SPOKEN_LANGUAGES = new Map<string, string>([
   ['english', 'English'],
@@ -67,9 +67,9 @@ export class ResumeService {
       throw new NotFoundException('User not found');
     }
     const normalizedUser = await ensureFreePlanFloors(this.prisma, refreshedUser);
-    const paymentFeatureEnabled = await this.isPaymentFeatureEnabled();
+    const productFlowRestrictionsEnabled = await this.areProductFlowRestrictionsEnabled();
     const resumeCount = await this.prisma.resume.count({ where: { userId } });
-    if (paymentFeatureEnabled && resumeCount + 1 > normalizedUser.resumesLimit) {
+    if (productFlowRestrictionsEnabled && resumeCount + 1 > normalizedUser.resumesLimit) {
       if (normalizedUser.plan === 'FREE') {
         throw new ForbiddenException('FREE_PLAN_RESUME_LIMIT_EXCEEDED: Free plan allows up to 2 resumes.');
       }
@@ -121,6 +121,8 @@ export class ResumeService {
   }
 
   private async enforceResumeCreateRateLimit(userId: string) {
+    const productFlowRestrictionsEnabled = await this.areProductFlowRestrictionsEnabled();
+    if (!productFlowRestrictionsEnabled) return;
     const isEnabled = this.settingsService
       ? await this.settingsService.isRateLimitEnabled()
       : defaultResumeCreateRateLimitEnabled();
@@ -170,12 +172,15 @@ export class ResumeService {
   }
 
   async update(userId: string, id: string, dto: UpdateResumeDto) {
-    rateLimitOrThrow({
-      key: `resume:update:${userId}`,
-      limit: 20,
-      windowMs: 60_000,
-      message: 'Rate limit exceeded for resume updates.',
-    });
+    const productFlowRestrictionsEnabled = await this.areProductFlowRestrictionsEnabled();
+    if (productFlowRestrictionsEnabled) {
+      rateLimitOrThrow({
+        key: `resume:update:${userId}`,
+        limit: 20,
+        windowMs: 60_000,
+        message: 'Rate limit exceeded for resume updates.',
+      });
+    }
     const current = await this.getRaw(userId, id);
     const currentCategories = readSkillCategoriesFromContact(current.contact);
     const normalized = validateResumeSectionsOrThrow({
@@ -234,9 +239,9 @@ export class ResumeService {
       throw new NotFoundException('User not found');
     }
     const normalizedUser = await ensureFreePlanFloors(this.prisma, refreshedUser);
-    const paymentFeatureEnabled = await this.isPaymentFeatureEnabled();
+    const productFlowRestrictionsEnabled = await this.areProductFlowRestrictionsEnabled();
     const resumeCount = await this.prisma.resume.count({ where: { userId } });
-    if (paymentFeatureEnabled && resumeCount + 1 > normalizedUser.resumesLimit) {
+    if (productFlowRestrictionsEnabled && resumeCount + 1 > normalizedUser.resumesLimit) {
       if (normalizedUser.plan === 'FREE') {
         throw new ForbiddenException('FREE_PLAN_RESUME_LIMIT_EXCEEDED: Free plan allows up to 2 resumes.');
       }
@@ -293,12 +298,15 @@ export class ResumeService {
   }
 
   async atsScoreForResume(userId: string, id: string, jdText?: string) {
-    rateLimitOrThrow({
-      key: `resume:ats:${userId}`,
-      limit: 20,
-      windowMs: 60_000,
-      message: 'Rate limit exceeded for ATS scans.',
-    });
+    const productFlowRestrictionsEnabled = await this.areProductFlowRestrictionsEnabled();
+    if (productFlowRestrictionsEnabled) {
+      rateLimitOrThrow({
+        key: `resume:ats:${userId}`,
+        limit: 20,
+        windowMs: 60_000,
+        message: 'Rate limit exceeded for ATS scans.',
+      });
+    }
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       throw new NotFoundException('User not found');
@@ -312,14 +320,13 @@ export class ResumeService {
     if (!refreshed) {
       throw new NotFoundException('User not found');
     }
-    const paymentFeatureEnabled = await this.isPaymentFeatureEnabled();
-    if (paymentFeatureEnabled && refreshed.atsScansUsed + 1 > refreshed.atsScansLimit) {
+    if (productFlowRestrictionsEnabled && refreshed.atsScansUsed + 1 > refreshed.atsScansLimit) {
       if (refreshed.plan === 'FREE') {
         throw new ForbiddenException('FREE_PLAN_ATS_LIMIT_EXCEEDED: Free plan allows ATS checks for up to 2 scans.');
       }
       throw new ForbiddenException('ATS scan limit exceeded.');
     }
-    const resume = await this.get(userId, id);
+    const resume = normalizeResumeForAtsOutput(await this.get(userId, id));
     const resumeText = buildResumeText(resume);
     const bulletPointers = collectBulletPointers(resume, id);
     const result = computeAtsScore({
@@ -353,18 +360,20 @@ export class ResumeService {
   }
 
   async generatePdf(userId: string, id: string, templateIdOverride?: string) {
-    rateLimitOrThrow({
-      key: `resume:pdf:${userId}`,
-      limit: 8,
-      windowMs: 60_000,
-      message: 'Rate limit exceeded for PDF export.',
-    });
+    const productFlowRestrictionsEnabled = await this.areProductFlowRestrictionsEnabled();
+    if (productFlowRestrictionsEnabled) {
+      rateLimitOrThrow({
+        key: `resume:pdf:${userId}`,
+        limit: 8,
+        windowMs: 60_000,
+        message: 'Rate limit exceeded for PDF export.',
+      });
+    }
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       throw new NotFoundException('User not found');
     }
-    const paymentFeatureEnabled = await this.isPaymentFeatureEnabled();
-    if (paymentFeatureEnabled && user.plan === 'FREE') {
+    if (productFlowRestrictionsEnabled && user.plan === 'FREE') {
       throw new ForbiddenException('Free plan does not allow PDF export.');
     }
     await ensureUsagePeriod(this.prisma, user);
@@ -372,14 +381,14 @@ export class ResumeService {
     if (!updatedUser) {
       throw new NotFoundException('User not found');
     }
-    if (paymentFeatureEnabled && updatedUser.pdfExportsUsed + 1 > updatedUser.pdfExportsLimit) {
+    if (productFlowRestrictionsEnabled && updatedUser.pdfExportsUsed + 1 > updatedUser.pdfExportsLimit) {
       throw new ForbiddenException('PDF export limit exceeded');
     }
     const resume = await this.get(userId, id);
     // Mismatch root-cause: preview uses React template components + app CSS, while
     // export used a separate HTML/CSS builder path. Keep export on a single renderer.
     const resolvedTemplateId = resolveExportTemplateId(templateIdOverride, resume.templateId);
-    validatePdfExportSafety(resume, { enforceMinimumScore: paymentFeatureEnabled });
+    validatePdfExportSafety(resume, { enforceMinimumScore: productFlowRestrictionsEnabled });
     const rendered = renderResumeTemplateHtml({
       templateId: resolvedTemplateId,
       resumeData: resume,
@@ -408,7 +417,7 @@ export class ResumeService {
       const buffer = await page.pdf({
         format: 'A4',
         printBackground: true,
-        margin: { top: '20mm', bottom: '20mm', left: '16mm', right: '16mm' },
+        margin: { top: '15mm', bottom: '15mm', left: '15mm', right: '15mm' },
       });
       return buffer;
     } finally {
@@ -417,7 +426,7 @@ export class ResumeService {
   }
 
   async debugExportHtml(userId: string, id: string, templateIdOverride?: string) {
-    const resume = await this.get(userId, id);
+    const resume = normalizeResumeForAtsOutput(await this.get(userId, id));
     const resolvedTemplateId = resolveExportTemplateId(templateIdOverride, resume.templateId);
     const rendered = renderResumeTemplateHtml({
       templateId: resolvedTemplateId,
@@ -458,7 +467,7 @@ export class ResumeService {
       });
     }
 
-    const normalized = normalizeText(trimmed);
+    const normalized = normalizeUploadText(trimmed);
     const parsed = parseResumeText(normalized);
     try {
       const dateMatches = collectDateMatches(normalized);
@@ -477,11 +486,11 @@ export class ResumeService {
       const finalizedExperience = finalizeExperience({
         experience: sanitized.experience,
         parsed,
-        fullText: trimmed,
+        fullText: normalized,
         dateMatches,
       });
       sanitized.experience = finalizedExperience;
-      const parsedPayload = {
+      const normalizedParsed = normalizeResumeForAtsOutput({
         title: sanitized.title,
         contact: sanitized.contact,
         summary: sanitized.summary,
@@ -490,6 +499,16 @@ export class ResumeService {
         education: sanitized.education,
         projects: sanitized.projects,
         certifications: sanitized.certifications,
+      });
+      const parsedPayload = {
+        title: normalizedParsed.title,
+        contact: normalizedParsed.contact,
+        summary: normalizedParsed.summary,
+        skills: normalizedParsed.skills,
+        experience: normalizedParsed.experience,
+        education: normalizedParsed.education,
+        projects: normalizedParsed.projects,
+        certifications: normalizedParsed.certifications,
         roleLevel: mapped.roleLevel,
         signals: mapped.signals,
         unmappedText: sanitized.unmappedText,
@@ -519,9 +538,15 @@ export class ResumeService {
     }
   }
 
-  private async isPaymentFeatureEnabled() {
+  private async areProductFlowRestrictionsEnabled() {
     if (!this.settingsService) return false;
-    return this.settingsService.isPaymentFeatureEnabled();
+    const settingsService = this.settingsService as SettingsService & {
+      areProductFlowRestrictionsEnabled?: () => Promise<boolean>;
+    };
+    if (typeof settingsService.areProductFlowRestrictionsEnabled !== 'function') {
+      return false;
+    }
+    return settingsService.areProductFlowRestrictionsEnabled();
   }
 }
 
@@ -608,9 +633,11 @@ export function extractExperienceFromText(fullText: string, parsed?: ParsedResum
   const rawText = String(fullText || '').trim();
   if (!rawText && !(parsed?.lines?.length)) return [];
   const rawLines = rawText
-    ? rawText.split(/\r?\n/).map((line) => line.trim())
+    ? rawText.split(/\r?\n/).map((line) => normalizeLegacyBulletPrefix(line).trim())
     : [];
-  const lines = rawLines.length ? rawLines : (parsed?.lines || []);
+  const lines = rawLines.length
+    ? rawLines
+    : (parsed?.lines || []).map((line) => normalizeLegacyBulletPrefix(line).trim());
   const startIndex = lines.findIndex((line) => isExperienceSection(line));
   if (startIndex < 0) return [];
   const relevant: string[] = [];
@@ -707,11 +734,11 @@ function parseWorkExperienceEntries(lines: string[]) {
   };
 
   for (let index = 0; index < lines.length; index += 1) {
-    const rawLine = lines[index];
+    const rawLine = normalizeLegacyBulletPrefix(lines[index] || '');
     const line = rawLine.trim();
     if (!line) continue;
     if (/^achievements:?$/i.test(line)) continue;
-    const nextLine = lines[index + 1]?.trim() ?? '';
+    const nextLine = normalizeLegacyBulletPrefix(lines[index + 1] || '').trim();
 
     const inline = parseInlineExperienceLine(line);
     if (inline) {
@@ -882,7 +909,7 @@ function normalizeDateRangeToken(value: string) {
 }
 
 function cleanHighlightEntry(line: string) {
-  return line.replace(/^[-*]\s*/, '').trim();
+  return normalizeLegacyBulletPrefix(line).replace(/^[-*]\s*/, '').trim();
 }
 
 function validateResumeSectionsOrThrow(input: {
@@ -1008,13 +1035,13 @@ function normalizeResumeDatesOrThrow(input: any) {
     throw new BadRequestException({ errors });
   }
 
-  return {
+  return normalizeResumeForAtsOutput({
     ...input,
     experience: normalizedExperience,
     education: normalizedEducation,
     projects: normalizedProjects,
     certifications: normalizedCertifications,
-  };
+  });
 }
 
 function normalizePersistDateToken(
@@ -1122,6 +1149,65 @@ function compareMonthTokens(a: string, b: string) {
   const bIndex = bYear * 12 + (bMonth - 1);
   if (aIndex === bIndex) return 0;
   return aIndex > bIndex ? 1 : -1;
+}
+
+function normalizeResumeForAtsOutput(input: any) {
+  const experience = sortExperienceChronological(
+    (Array.isArray(input?.experience) ? input.experience : [])
+      .map((item: any) => ({
+        company: cleanExperienceValue(item?.company || ''),
+        role: cleanRoleText(item?.role || ''),
+        startDate: normalizeExportDateToken(item?.startDate || '', false),
+        endDate: normalizeExportDateToken(item?.endDate || '', true),
+        highlights: sanitizeBulletList(item?.highlights),
+      }))
+      .filter((item: any) => item.company || item.role || item.highlights.length),
+  );
+
+  const education = (Array.isArray(input?.education) ? input.education : [])
+    .map((item: any) => ({
+      ...item,
+      institution: cleanExperienceValue(item?.institution || ''),
+      degree: cleanExperienceValue(item?.degree || ''),
+      startDate: normalizeExportDateToken(item?.startDate || '', false),
+      endDate: normalizeExportDateToken(item?.endDate || '', false),
+      details: sanitizeBulletList(item?.details),
+    }))
+    .filter((item: any) => item.institution || item.degree || (item.details || []).length);
+
+  const projects = (Array.isArray(input?.projects) ? input.projects : [])
+    .map((item: any) => ({
+      ...item,
+      name: cleanExperienceValue(item?.name || ''),
+      role: cleanRoleText(item?.role || ''),
+      startDate: normalizeExportDateToken(item?.startDate || '', false) || undefined,
+      endDate: normalizeExportDateToken(item?.endDate || '', false) || undefined,
+      highlights: sanitizeBulletList(item?.highlights),
+    }))
+    .filter((item: any) => item.name || item.highlights.length);
+
+  const certifications = (Array.isArray(input?.certifications) ? input.certifications : [])
+    .map((item: any) => ({
+      ...item,
+      name: cleanExperienceValue(item?.name || ''),
+      issuer: cleanExperienceValue(item?.issuer || ''),
+      date: normalizeExportDateToken(item?.date || '', false) || undefined,
+      details: sanitizeBulletList(item?.details),
+    }))
+    .filter((item: any) => item.name);
+
+  return {
+    ...input,
+    summary: String(input?.summary || '').replace(/\s+/g, ' ').trim(),
+    skills: dedupeSkills(Array.isArray(input?.skills) ? input.skills : []),
+    technicalSkills: dedupeSkills(Array.isArray(input?.technicalSkills) ? input.technicalSkills : []),
+    softSkills: dedupeSkills(Array.isArray(input?.softSkills) ? input.softSkills : []),
+    languages: dedupeLanguages(Array.isArray(input?.languages) ? input.languages : []),
+    experience,
+    education,
+    projects,
+    certifications,
+  };
 }
 
 function resolveSkillCategories(input: {
@@ -1287,14 +1373,14 @@ function decorateResumeWithSkillCategories(resume: any) {
     softSkills: categories.softSkills,
     languages: Array.isArray(resume?.languages) ? (resume.languages as string[]) : [],
   });
-  return {
+  return normalizeResumeForAtsOutput({
     ...resume,
     contact: cleanContactForResponse(resume?.contact),
     skills: normalized.skills,
     technicalSkills: normalized.technicalSkills,
     softSkills: normalized.softSkills,
     languages: normalized.languages,
-  };
+  });
 }
 
 function enforceAtsResumeRules(input: {
@@ -1421,8 +1507,26 @@ function normalizeText(text: string) {
     .trim();
 }
 
+const LEGACY_BULLET_PREFIX_RE = /^\s*(?:[-*•·]+|\d{1,3}[.)]|[a-z][.)])?\s*(impact|achievement|result|highlights?|accomplishment)s?:\s*/i;
+
+function normalizeUploadText(text: string) {
+  return normalizeText(text)
+    .split('\n')
+    .map((line) => normalizeLegacyBulletPrefix(line))
+    .join('\n')
+    .trim();
+}
+
+function normalizeLegacyBulletPrefix(line: string) {
+  const raw = String(line || '');
+  if (!LEGACY_BULLET_PREFIX_RE.test(raw)) return raw;
+  const stripped = raw.replace(LEGACY_BULLET_PREFIX_RE, '').trim();
+  if (!stripped) return '';
+  return `- ${stripped}`;
+}
+
 function mapResumeSections(text: string) {
-  const lines = text.split(/\n/).map((l) => l.trim()).filter(Boolean);
+  const lines = text.split(/\n/).map((l) => normalizeLegacyBulletPrefix(l).trim()).filter(Boolean);
   const sections: Record<string, string[]> = {};
   let currentSection = 'unmapped';
 
@@ -1566,23 +1670,23 @@ function extractExperience(lines: string[]) {
   const blocks: Array<{ company: string; role: string; startDate: string; endDate: string; highlights: string[] }> = [];
   let current: { company: string; role: string; startDate: string; endDate: string; highlights: string[] } | null = null;
 
-  for (const line of lines) {
+  for (const rawLine of lines) {
+    const line = normalizeLegacyBulletPrefix(rawLine).trim();
+    if (!line) continue;
     if (looksLikeExperienceHeader(line)) {
       if (current && hasMeaningfulExperience(current)) blocks.push(current);
       current = buildExperienceHeader(line);
       continue;
     }
 
-    if (!current) {
-      current = { company: '', role: '', startDate: '', endDate: '', highlights: [] };
-    }
-
-    if (isDateLine(line) && (!current.startDate && !current.endDate)) {
+    if (isDateLine(line) && current && (current.company || current.role) && (!current.startDate && !current.endDate)) {
       const dates = extractDates(line);
       current.startDate = dates.start || current.startDate;
       current.endDate = dates.end || current.endDate;
       continue;
     }
+
+    if (!current) continue;
 
     if (line.startsWith('-')) {
       current.highlights.push(line.replace(/^[-*]\s*/, ''));
@@ -1730,13 +1834,21 @@ function looksLikeRoleCompany(line: string) {
 }
 
 function looksLikeExperienceHeader(line: string) {
-  if (!line || line.startsWith('-')) return false;
-  if (detectHeading(line.toLowerCase())) return false;
-  const hasDate = isDateLine(line);
-  const hasRole = looksLikeRoleCompany(line);
-  const hasCompany = looksLikeCompany(line);
-  const hasDelimiter = /@| at | \| | - | — /i.test(line);
-  return (hasDate && (hasRole || hasCompany || hasDelimiter)) || (hasRole && (hasCompany || hasDelimiter));
+  const normalizedLine = normalizeLegacyBulletPrefix(String(line || '')).trim();
+  if (!normalizedLine || normalizedLine.startsWith('-')) return false;
+  if (detectHeading(normalizedLine.toLowerCase())) return false;
+
+  const hasDate = isDateLine(normalizedLine);
+  const hasRole = looksLikeRoleCompany(normalizedLine);
+  const hasCompany = looksLikeCompany(normalizedLine);
+  const split = splitRoleCompany(stripDates(normalizedLine));
+  const hasRoleCompanyPattern = Boolean(split.role.trim() && split.company.trim());
+
+  if (hasDate) {
+    // Date lines become new experience entries only with nearby role/company context.
+    return hasRoleCompanyPattern || (hasRole && hasCompany);
+  }
+  return hasRoleCompanyPattern || (hasRole && hasCompany);
 }
 
 function buildExperienceHeader(line: string) {
@@ -1979,6 +2091,8 @@ type TemplateExperienceItem = {
 type TemplateEducationItem = {
   degree: string;
   institution: string;
+  startDate?: string;
+  endDate?: string;
 };
 
 type TemplateProjectItem = {
@@ -1988,15 +2102,23 @@ type TemplateProjectItem = {
   highlights: string[];
 };
 
+type TemplateCertificationItem = {
+  name: string;
+  issuer: string;
+  date: string;
+};
+
 const ATS_TEMPLATE_EXPORT_CSS_BUNDLE = 'inline:ats-template-css-v1';
 const ATS_TEMPLATE_EXPORT_CSS = `
-      @page { size: A4; margin: 12mm; }
+      @page { size: A4; margin: 15mm; }
       * { box-sizing: border-box; }
       html, body { margin: 0; padding: 0; }
       body {
-        font-family: "Inter", "Segoe UI", Arial, sans-serif;
+        font-family: Arial, "Helvetica Neue", Helvetica, "Inter", sans-serif;
         color: #111;
         background: #ffffff;
+        font-size: 11px;
+        line-height: 1.32;
       }
       .resume-export-root {
         width: 100%;
@@ -2009,39 +2131,44 @@ const ATS_TEMPLATE_EXPORT_CSS = `
       }
       .ats-template {
         width: 100%;
-        min-height: 100%;
         box-sizing: border-box;
         border: 1px solid #d9e2ec;
         background: #fff;
         padding: 18px 20px;
         color: #111;
-        font-size: 12px;
-        line-height: 1.42;
+        font-size: 11px;
+        line-height: 1.32;
+        overflow-wrap: anywhere;
+        word-break: break-word;
       }
       .ats-template--technical {
-        padding-top: 14px;
-        padding-bottom: 14px;
-        font-size: 11px;
+        padding-top: 16px;
+        padding-bottom: 16px;
       }
       .ats-template__header {
         border-bottom: 2px solid #111;
-        padding-bottom: 8px;
+        padding-bottom: 7px;
         margin-bottom: 12px;
       }
       .ats-template__header h1 {
         margin: 0;
-        font-size: 22px;
-        line-height: 1.2;
+        font-size: 21px;
+        line-height: 1.15;
         font-weight: 700;
+        overflow-wrap: anywhere;
+        word-break: break-word;
       }
       .ats-template--executive .ats-template__header h1 {
-        font-size: 27px;
+        font-size: 24px;
         letter-spacing: 0.3px;
       }
       .ats-template__header p {
         margin: 4px 0 0;
         color: #39495e;
-        font-size: 11px;
+        font-size: 10.6px;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        white-space: normal;
       }
       .ats-template__header--bar {
         border-bottom-color: #2b3a55;
@@ -2061,16 +2188,18 @@ const ATS_TEMPLATE_EXPORT_CSS = `
       }
       .ats-section h2 {
         margin: 0 0 6px;
-        font-size: 11px;
+        font-size: 12.5px;
         letter-spacing: 0.08em;
         text-transform: uppercase;
-        color: #1a2f45;
+        color: #1b2b3c;
       }
       .ats-section h2.ats-upper {
         letter-spacing: 0.12em;
       }
       .ats-section p {
         margin: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
       }
       .ats-item {
         margin-top: 8px;
@@ -2078,15 +2207,19 @@ const ATS_TEMPLATE_EXPORT_CSS = `
       }
       .ats-item h3 {
         margin: 0;
-        font-size: 12px;
+        font-size: 11.2px;
         font-weight: 700;
+        overflow-wrap: anywhere;
+        word-break: break-word;
       }
       .ats-item p {
         margin: 2px 0 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
       }
       .ats-item__meta {
         color: #4b5d74;
-        font-size: 11px;
+        font-size: 10.4px;
       }
       .ats-item ul {
         margin: 5px 0 0 18px;
@@ -2094,9 +2227,8 @@ const ATS_TEMPLATE_EXPORT_CSS = `
       }
       .ats-item li {
         margin: 2px 0;
-      }
-      .ats-list--impact li {
-        list-style-type: square;
+        overflow-wrap: anywhere;
+        word-break: break-word;
       }
 `;
 
@@ -2145,160 +2277,68 @@ function renderTemplateBody(templateId: string, resume: any) {
   if (templateId === 'modern') return renderModernTemplateArticle(resume);
   if (templateId === 'executive') return renderExecutiveTemplateArticle(resume);
   if (templateId === 'technical') return renderTechnicalTemplateArticle(resume);
-  if (templateId === 'graduate') return renderGraduateTemplateArticle(resume);
+  if (templateId === 'consultant') return renderConsultantTemplateArticle(resume);
+  if (['minimal', 'graduate'].includes(templateId)) return renderMinimalTemplateArticle(resume);
   return renderClassicTemplateArticle(resume);
 }
 
 function renderClassicTemplateArticle(resume: any) {
-  const summary = escapeHtml(String(resume.summary || '').trim() || 'Add a short professional summary.');
-  const skills = templateCleanList(resume.skills);
-  const experience = templateExperienceItems(resume);
-  const education = templateEducationItems(resume);
+  const normalized = normalizeTemplateResumeData(resume);
   return `
     <article class="ats-template ats-template--classic">
-      ${templateHeader(resume)}
-      <section class="ats-section">
-        <h2>SUMMARY</h2>
-        <p>${summary}</p>
-      </section>
-      <section class="ats-section">
-        <h2>SKILLS</h2>
-        <p>${skills.length ? escapeHtml(skills.join(', ')) : 'Add role-relevant skills.'}</p>
-      </section>
-      <section class="ats-section">
-        <h2>EXPERIENCE</h2>
-        ${experience.length ? experience.map((item: TemplateExperienceItem) => renderRoleBlock(item, ', ')).join('') : '<p>No experience added.</p>'}
-      </section>
-      <section class="ats-section">
-        <h2>EDUCATION</h2>
-        ${education.length ? education.map((item: TemplateEducationItem) => renderEducationBlock(item)).join('') : '<p>No education added.</p>'}
-      </section>
+      ${templateHeader(normalized)}
+      ${renderOrderedSections(normalized, { companyJoiner: ', ', uppercaseHeadings: true })}
     </article>
   `;
 }
 
 function renderModernTemplateArticle(resume: any) {
-  const summary = escapeHtml(String(resume.summary || '').trim() || 'Add a concise summary focused on role fit and impact.');
-  const skills = templateCleanList(resume.skills);
-  const experience = templateExperienceItems(resume);
-  const education = templateEducationItems(resume);
+  const normalized = normalizeTemplateResumeData(resume);
   return `
     <article class="ats-template ats-template--modern">
-      ${templateHeader(resume, { bar: true })}
-      <section class="ats-section ats-section--divided">
-        <h2>Professional Summary</h2>
-        <p>${summary}</p>
-      </section>
-      <section class="ats-section ats-section--divided">
-        <h2>Skills</h2>
-        <p>${skills.length ? escapeHtml(skills.join(', ')) : 'Add role-specific skills.'}</p>
-      </section>
-      <section class="ats-section ats-section--divided">
-        <h2>Experience</h2>
-        ${experience.length ? experience.map((item: TemplateExperienceItem) => renderRoleBlock(item, ' | ')).join('') : '<p>No experience added.</p>'}
-      </section>
-      <section class="ats-section">
-        <h2>Education</h2>
-        ${education.length ? education.map((item: TemplateEducationItem) => renderEducationBlock(item)).join('') : '<p>No education added.</p>'}
-      </section>
+      ${templateHeader(normalized, { bar: true })}
+      ${renderOrderedSections(normalized, { companyJoiner: ' | ', divided: true })}
     </article>
   `;
 }
 
 function renderExecutiveTemplateArticle(resume: any) {
-  const summary = escapeHtml(String(resume.summary || '').trim() || 'Add leadership summary with measurable outcomes.');
-  const skills = templateCleanList(resume.skills);
-  const experience = templateExperienceItems(resume);
-  const education = templateEducationItems(resume);
+  const normalized = normalizeTemplateResumeData(resume);
   return `
     <article class="ats-template ats-template--executive">
-      ${templateHeader(resume, { executive: true })}
-      <section class="ats-section">
-        <h2 class="ats-upper">EXECUTIVE SUMMARY</h2>
-        <p>${summary}</p>
-      </section>
-      <section class="ats-section">
-        <h2 class="ats-upper">CORE CAPABILITIES</h2>
-        <p>${skills.length ? escapeHtml(skills.join(', ')) : 'Add strategic and functional capabilities.'}</p>
-      </section>
-      <section class="ats-section">
-        <h2 class="ats-upper">PROFESSIONAL IMPACT</h2>
-        ${experience.length ? experience.map((item: TemplateExperienceItem) => renderRoleBlock(item, ', ', { prefixImpact: true, impactList: true })).join('') : '<p>No experience added.</p>'}
-      </section>
-      <section class="ats-section">
-        <h2 class="ats-upper">EDUCATION</h2>
-        ${education.length ? education.map((item: TemplateEducationItem) => renderEducationBlock(item)).join('') : '<p>No education added.</p>'}
-      </section>
+      ${templateHeader(normalized, { executive: true })}
+      ${renderOrderedSections(normalized, { companyJoiner: ', ', upperClassHeadings: true })}
     </article>
   `;
 }
 
 function renderTechnicalTemplateArticle(resume: any) {
-  const summary = escapeHtml(String(resume.summary || '').trim() || 'Add a concise technical summary.');
-  const skills = templateCleanList(resume.skills);
-  const technicalSkills = templateCleanList(resume.technicalSkills);
-  const softSkills = templateCleanList(resume.softSkills);
-  const languages = templateCleanList(resume.languages);
-  const groupedSkills = [
-    technicalSkills.length ? `Technical: ${technicalSkills.join(', ')}` : '',
-    softSkills.length ? `Soft: ${softSkills.join(', ')}` : '',
-    skills.length ? `General: ${skills.join(', ')}` : '',
-    languages.length ? `Languages: ${languages.join(', ')}` : '',
-  ].filter(Boolean).join(' | ');
-  const experience = templateExperienceItems(resume);
-  const education = templateEducationItems(resume);
+  const normalized = normalizeTemplateResumeData(resume);
+  const groupedSkills = buildGroupedSkillLine(normalized);
   return `
     <article class="ats-template ats-template--technical">
-      ${templateHeader(resume)}
-      <section class="ats-section ats-section--tight">
-        <h2>Summary</h2>
-        <p>${summary}</p>
-      </section>
-      <section class="ats-section ats-section--tight">
-        <h2>Skill Stack</h2>
-        <p>${groupedSkills ? escapeHtml(groupedSkills) : 'Add technical and role-specific skills.'}</p>
-      </section>
-      <section class="ats-section ats-section--tight">
-        <h2>Experience</h2>
-        ${experience.length ? experience.map((item: TemplateExperienceItem) => renderRoleBlock(item, ' @ ')).join('') : '<p>No experience added.</p>'}
-      </section>
-      <section class="ats-section ats-section--tight">
-        <h2>Education</h2>
-        ${education.length ? education.map((item: TemplateEducationItem) => renderEducationBlock(item)).join('') : '<p>No education added.</p>'}
-      </section>
+      ${templateHeader(normalized)}
+      ${renderOrderedSections(normalized, { companyJoiner: ' @ ', tight: true, groupedSkillLine: groupedSkills })}
     </article>
   `;
 }
 
-function renderGraduateTemplateArticle(resume: any) {
-  const summary = escapeHtml(String(resume.summary || '').trim() || 'Add a short introduction aligned to your target role.');
-  const skills = templateCleanList(resume.skills);
-  const projects = templateProjectItems(resume);
-  const experience = templateExperienceItems(resume);
-  const education = templateEducationItems(resume);
+function renderMinimalTemplateArticle(resume: any) {
+  const normalized = normalizeTemplateResumeData(resume);
   return `
-    <article class="ats-template ats-template--graduate">
-      ${templateHeader(resume)}
-      <section class="ats-section">
-        <h2>Summary</h2>
-        <p>${summary}</p>
-      </section>
-      <section class="ats-section">
-        <h2>Education</h2>
-        ${education.length ? education.map((item: TemplateEducationItem) => renderEducationBlock(item)).join('') : '<p>No education added.</p>'}
-      </section>
-      <section class="ats-section">
-        <h2>Projects</h2>
-        ${projects.length ? projects.map((item: TemplateProjectItem) => renderProjectBlock(item)).join('') : '<p>No projects added.</p>'}
-      </section>
-      <section class="ats-section">
-        <h2>Experience</h2>
-        ${experience.length ? experience.map((item: TemplateExperienceItem) => renderRoleBlock(item, ', ')).join('') : '<p>No experience added.</p>'}
-      </section>
-      <section class="ats-section">
-        <h2>Skills</h2>
-        <p>${skills.length ? escapeHtml(skills.join(', ')) : 'Add your strongest skills.'}</p>
-      </section>
+    <article class="ats-template ats-template--minimal">
+      ${templateHeader(normalized)}
+      ${renderOrderedSections(normalized, { companyJoiner: ', ' })}
+    </article>
+  `;
+}
+
+function renderConsultantTemplateArticle(resume: any) {
+  const normalized = normalizeTemplateResumeData(resume);
+  return `
+    <article class="ats-template ats-template--consultant">
+      ${templateHeader(normalized, { bar: true })}
+      ${renderOrderedSections(normalized, { companyJoiner: ' | ', divided: true })}
     </article>
   `;
 }
@@ -2316,39 +2356,104 @@ function templateHeader(resume: any, options?: { bar?: boolean; executive?: bool
   `;
 }
 
+function renderOrderedSections(
+  resume: any,
+  options: {
+    companyJoiner: ', ' | ' | ' | ' @ ';
+    tight?: boolean;
+    divided?: boolean;
+    uppercaseHeadings?: boolean;
+    upperClassHeadings?: boolean;
+    groupedSkillLine?: string;
+  },
+) {
+  const summary = escapeHtml(String(resume.summary || '').trim() || 'Add a concise summary aligned to your target role.');
+  const skills = templateCleanList(resume.skills);
+  const languages = templateCleanList(resume.languages);
+  const experience = templateExperienceItems(resume);
+  const projects = templateProjectItems(resume);
+  const education = templateEducationItems(resume);
+  const certifications = templateCertificationItems(resume);
+  const sectionClass = `ats-section${options.tight ? ' ats-section--tight' : ''}${options.divided ? ' ats-section--divided' : ''}`;
+
+  const heading = (label: string) => {
+    const transformed = options.uppercaseHeadings || options.upperClassHeadings ? label.toUpperCase() : label;
+    const classAttr = options.upperClassHeadings ? ' class="ats-upper"' : '';
+    return `<h2${classAttr}>${transformed}</h2>`;
+  };
+
+  const skillLine = options.groupedSkillLine || (skills.length ? skills.join(', ') : 'Add role-relevant skills.');
+  const sections: string[] = [];
+
+  sections.push(`
+      <section class="${sectionClass}">
+        ${heading('Summary')}
+        <p>${summary}</p>
+      </section>
+  `);
+
+  sections.push(`
+      <section class="${sectionClass}">
+        ${heading('Skills')}
+        <p>${escapeHtml(skillLine)}</p>
+      </section>
+  `);
+
+  sections.push(`
+      <section class="${sectionClass}">
+        ${heading('Experience')}
+        ${experience.length ? experience.map((item: TemplateExperienceItem) => renderRoleBlock(item, options.companyJoiner)).join('') : '<p>No experience added.</p>'}
+      </section>
+  `);
+
+  if (projects.length) {
+    sections.push(`
+      <section class="${sectionClass}">
+        ${heading('Projects')}
+        ${projects.map((item: TemplateProjectItem) => renderProjectBlock(item)).join('')}
+      </section>
+    `);
+  }
+
+  sections.push(`
+      <section class="${sectionClass}">
+        ${heading('Education')}
+        ${education.length ? education.map((item: TemplateEducationItem) => renderEducationBlock(item)).join('') : '<p>No education added.</p>'}
+      </section>
+  `);
+
+  if (certifications.length) {
+    sections.push(`
+      <section class="${sectionClass}">
+        ${heading('Certifications')}
+        ${certifications.map((item: TemplateCertificationItem) => renderCertificationBlock(item)).join('')}
+      </section>
+    `);
+  }
+
+  if (languages.length) {
+    sections.push(`
+      <section class="${sectionClass}">
+        ${heading('Languages')}
+        <p>${escapeHtml(languages.join(', '))}</p>
+      </section>
+    `);
+  }
+
+  return sections.join('');
+}
+
 function renderRoleBlock(
   item: { role: string; company: string; startDate: string; endDate: string; highlights: string[] },
   companyJoiner: ', ' | ' | ' | ' @ ',
-  options?: { prefixImpact?: boolean; impactList?: boolean },
 ) {
   const heading = `${item.role || 'Role'}${item.company ? `${companyJoiner}${item.company}` : ''}`;
-  const lines = templateCleanList(item.highlights).map((line) => (options?.prefixImpact ? `Impact: ${line}` : line));
+  const lines = templateCleanList(item.highlights);
+  const dateLine = templateDateRange(item.startDate, item.endDate);
   return `
         <div class="ats-item">
           <h3>${escapeHtml(heading)}</h3>
-          <p class="ats-item__meta">${escapeHtml(`${item.startDate || ''}${item.endDate ? ` - ${item.endDate}` : ''}`)}</p>
-          <ul${options?.impactList ? ' class="ats-list--impact"' : ''}>
-            ${lines.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}
-          </ul>
-        </div>
-  `;
-}
-
-function renderEducationBlock(item: { degree: string; institution: string }) {
-  return `
-        <div class="ats-item">
-          <h3>${escapeHtml(item.degree || 'Degree')}</h3>
-          <p>${escapeHtml(item.institution || '')}</p>
-        </div>
-  `;
-}
-
-function renderProjectBlock(item: { name: string; startDate: string; endDate: string; highlights: string[] }) {
-  const lines = templateCleanList(item.highlights);
-  return `
-        <div class="ats-item">
-          <h3>${escapeHtml(item.name || 'Project')}</h3>
-          <p class="ats-item__meta">${escapeHtml(`${item.startDate || ''}${item.endDate ? ` - ${item.endDate}` : ''}`)}</p>
+          ${dateLine ? `<p class="ats-item__meta">${escapeHtml(dateLine)}</p>` : ''}
           <ul>
             ${lines.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}
           </ul>
@@ -2356,9 +2461,48 @@ function renderProjectBlock(item: { name: string; startDate: string; endDate: st
   `;
 }
 
+function renderEducationBlock(item: { degree: string; institution: string; startDate?: string; endDate?: string }) {
+  const dateLine = templateDateRange(String(item.startDate || ''), String(item.endDate || ''));
+  return `
+        <div class="ats-item">
+          <h3>${escapeHtml(item.degree || 'Degree')}</h3>
+          <p>${escapeHtml(item.institution || '')}</p>
+          ${dateLine ? `<p class="ats-item__meta">${escapeHtml(dateLine)}</p>` : ''}
+        </div>
+  `;
+}
+
+function renderProjectBlock(item: { name: string; startDate: string; endDate: string; highlights: string[] }) {
+  const lines = templateCleanList(item.highlights);
+  const dateLine = templateDateRange(item.startDate, item.endDate);
+  return `
+        <div class="ats-item">
+          <h3>${escapeHtml(item.name || 'Project')}</h3>
+          ${dateLine ? `<p class="ats-item__meta">${escapeHtml(dateLine)}</p>` : ''}
+          <ul>
+            ${lines.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}
+          </ul>
+        </div>
+  `;
+}
+
+function renderCertificationBlock(item: TemplateCertificationItem) {
+  const meta = [item.issuer, templateDateRange(item.date, '')].filter(Boolean).join(' | ');
+  return `
+        <div class="ats-item">
+          <h3>${escapeHtml(item.name || 'Certification')}</h3>
+          ${meta ? `<p>${escapeHtml(meta)}</p>` : ''}
+        </div>
+  `;
+}
+
 function templateCleanList(input: unknown) {
   if (!Array.isArray(input)) return [] as string[];
-  return input.map((item) => String(item || '').trim()).filter(Boolean);
+  return uniqueLines(
+    input
+      .map((item) => sanitizeBulletForAts(String(item || '')))
+      .filter(Boolean),
+  );
 }
 
 function templateFullNameOrTitle(resume: any) {
@@ -2379,15 +2523,15 @@ function templateContactLine(resume: any) {
 
 function templateExperienceItems(resume: any) {
   const items = Array.isArray(resume?.experience) ? (resume.experience as Array<Record<string, unknown>>) : [];
-  return items
+  return sortExperienceChronological(items
     .map((item: Record<string, unknown>): TemplateExperienceItem => ({
       role: String(item?.role || '').trim(),
       company: String(item?.company || '').trim(),
-      startDate: String(item?.startDate || '').trim(),
-      endDate: String(item?.endDate || '').trim(),
-      highlights: templateCleanList(item?.highlights),
+      startDate: normalizeExportDateToken(String(item?.startDate || ''), false),
+      endDate: normalizeExportDateToken(String(item?.endDate || ''), true),
+      highlights: sanitizeBulletList(item?.highlights),
     }))
-    .filter((item: TemplateExperienceItem) => Boolean(item.role || item.company || item.highlights.length));
+    .filter((item: TemplateExperienceItem) => Boolean(item.role || item.company || item.highlights.length)));
 }
 
 function templateEducationItems(resume: any) {
@@ -2396,6 +2540,8 @@ function templateEducationItems(resume: any) {
     .map((item: Record<string, unknown>): TemplateEducationItem => ({
       degree: String(item?.degree || '').trim(),
       institution: String(item?.institution || '').trim(),
+      startDate: normalizeExportDateToken(String(item?.startDate || ''), false),
+      endDate: normalizeExportDateToken(String(item?.endDate || ''), false),
     }))
     .filter((item: TemplateEducationItem) => Boolean(item.degree || item.institution));
 }
@@ -2405,18 +2551,103 @@ function templateProjectItems(resume: any) {
   return items
     .map((item: Record<string, unknown>): TemplateProjectItem => ({
       name: String(item?.name || '').trim(),
-      startDate: String(item?.startDate || '').trim(),
-      endDate: String(item?.endDate || '').trim(),
-      highlights: templateCleanList(item?.highlights),
+      startDate: normalizeExportDateToken(String(item?.startDate || ''), false),
+      endDate: normalizeExportDateToken(String(item?.endDate || ''), false),
+      highlights: sanitizeBulletList(item?.highlights),
     }))
     .filter((item: TemplateProjectItem) => Boolean(item.name || item.highlights.length));
+}
+
+function templateCertificationItems(resume: any) {
+  const items = Array.isArray(resume?.certifications) ? (resume.certifications as Array<Record<string, unknown>>) : [];
+  return items
+    .map((item: Record<string, unknown>): TemplateCertificationItem => ({
+      name: String(item?.name || '').trim(),
+      issuer: String(item?.issuer || '').trim(),
+      date: normalizeExportDateToken(String(item?.date || ''), false),
+    }))
+    .filter((item: TemplateCertificationItem) => Boolean(item.name));
+}
+
+function normalizeTemplateResumeData(resume: any) {
+  const normalized = {
+    ...resume,
+    summary: String(resume?.summary || '').replace(/\s+/g, ' ').trim(),
+    skills: dedupeSkills(templateCleanList(resume?.skills)),
+    technicalSkills: dedupeSkills(templateCleanList(resume?.technicalSkills)),
+    softSkills: dedupeSkills(templateCleanList(resume?.softSkills)),
+    languages: dedupeLanguages(templateCleanList(resume?.languages)),
+    experience: templateExperienceItems(resume),
+    projects: templateProjectItems(resume),
+    education: templateEducationItems(resume),
+    certifications: templateCertificationItems(resume),
+  };
+  return normalized;
+}
+
+function buildGroupedSkillLine(resume: any) {
+  const technicalSkills = templateCleanList(resume?.technicalSkills);
+  const softSkills = templateCleanList(resume?.softSkills);
+  const skills = templateCleanList(resume?.skills);
+  return [
+    technicalSkills.length ? `Technical: ${technicalSkills.join(', ')}` : '',
+    softSkills.length ? `Soft: ${softSkills.join(', ')}` : '',
+    skills.length ? `General: ${skills.join(', ')}` : '',
+  ].filter(Boolean).join(' | ');
+}
+
+function sanitizeBulletList(input: unknown) {
+  if (!Array.isArray(input)) return [] as string[];
+  return uniqueLines(
+    input
+      .map((line) => sanitizeBulletForAts(String(line || '')))
+      .filter(Boolean),
+  );
+}
+
+function sanitizeBulletForAts(value: string) {
+  const cleaned = normalizeBulletText(String(value || ''))
+    .replace(/^\s*[-:;|]+\s*/, '')
+    .replace(/\s*[-:;|]+\s*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned;
+}
+
+function templateDateRange(startDate: string, endDate: string) {
+  const start = formatExportDateToken(startDate);
+  const end = formatExportDateToken(endDate);
+  if (start && end) return `${start} - ${end}`;
+  if (start) return start;
+  if (end) return end;
+  return '';
+}
+
+function formatExportDateToken(token: string) {
+  const normalized = normalizeExportDateToken(token, true);
+  if (!normalized) return '';
+  if (normalized === 'Present') return 'Present';
+  const match = normalized.match(/^(19\d{2}|20\d{2})-(0[1-9]|1[0-2])$/);
+  if (!match) return '';
+  const monthLabels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const monthIndex = Number(match[2]) - 1;
+  return `${monthLabels[monthIndex]} ${match[1]}`;
+}
+
+function normalizeExportDateToken(token: string, allowPresent: boolean) {
+  const raw = String(token || '').trim();
+  if (!raw || /^[-_/.,\s|]+$/.test(raw)) return '';
+  if (allowPresent && /^(present|current|now)$/i.test(raw)) return 'Present';
+  const normalized = toYearMonthToken(raw);
+  return normalized || '';
 }
 
 function normalizeTemplateId(value: unknown) {
   const raw = String(value || '').trim().toLowerCase();
   if (!raw) return 'classic';
   const aliases: Record<string, string> = {
-    student: 'graduate',
+    student: 'minimal',
+    graduate: 'graduate',
     senior: 'executive',
     portfolio: 'executive',
     product: 'modern',
@@ -2425,9 +2656,11 @@ function normalizeTemplateId(value: unknown) {
     'executive-impact': 'executive',
     'technical-compact': 'technical',
     'graduate-starter': 'graduate',
+    'minimal-clean': 'minimal',
+    'consultant-clean': 'consultant',
   };
   const normalized = aliases[raw] || raw;
-  if (['classic', 'modern', 'executive', 'technical', 'graduate'].includes(normalized)) {
+  if (['classic', 'modern', 'executive', 'technical', 'minimal', 'consultant', 'graduate'].includes(normalized)) {
     return normalized;
   }
   return 'classic';
@@ -2442,14 +2675,15 @@ function resolveExportTemplateId(templateIdOverride: unknown, resumeTemplateId: 
 }
 
 function isSingleColumnAtsTemplate(templateId: string) {
-  return ['classic', 'modern', 'executive', 'technical', 'graduate'].includes(templateId);
+  return ['classic', 'modern', 'executive', 'technical', 'minimal', 'consultant', 'graduate'].includes(templateId);
 }
 
-function resolveTemplateFlavor(templateId: string): 'classic' | 'modern' | 'executive' | 'technical' | 'graduate' {
+function resolveTemplateFlavor(templateId: string): 'classic' | 'modern' | 'executive' | 'technical' | 'minimal' | 'consultant' {
   if (templateId === 'modern') return 'modern';
+  if (templateId === 'consultant') return 'consultant';
   if (['executive', 'senior', 'portfolio'].includes(templateId)) return 'executive';
   if (templateId === 'technical') return 'technical';
-  if (['graduate', 'student'].includes(templateId)) return 'graduate';
+  if (['minimal', 'graduate', 'student'].includes(templateId)) return 'minimal';
   return 'classic';
 }
 
@@ -2469,6 +2703,8 @@ function resolveTemplateAccent(templateId: string) {
     senior: '#1f3a5f',
     executive: '#1f3a5f',
     graduate: '#2f7a5d',
+    minimal: '#111111',
+    consultant: '#2b3a55',
     product: '#2b3a55',
     portfolio: '#7a3e20',
     technical: '#111111',
@@ -2489,6 +2725,8 @@ function resolveTemplateFont(templateId: string) {
     modern: '"Source Sans 3", "Segoe UI", Arial, sans-serif',
     technical: '"IBM Plex Sans", "Segoe UI", Arial, sans-serif',
     graduate: '"Work Sans", "Segoe UI", Arial, sans-serif',
+    minimal: '"IBM Plex Sans", "Segoe UI", Arial, sans-serif',
+    consultant: '"IBM Plex Sans", "Segoe UI", Arial, sans-serif',
     default: '"IBM Plex Sans", "Segoe UI", Arial, sans-serif',
   };
   return families[templateId] || families.default;
@@ -2616,6 +2854,8 @@ function computeAtsScore(input: {
   const missingKeywords = hasJobDescription
     ? jdKeywords.filter((k) => !resumeTokens.has(k))
     : [];
+  const targetRoleAnalysis = analyzeTargetRoleSignals(jdText, input.resumeText);
+  const suggestionMissingKeywords = missingKeywords.filter((keyword) => !targetRoleAnalysis.missingTargetRoleTokens.has(keyword.toLowerCase()));
 
   const rejectionReasons: string[] = [];
   if (!input.sections.experience) rejectionReasons.push('Missing Experience section.');
@@ -2627,7 +2867,8 @@ function computeAtsScore(input: {
   }
 
   const improvementSuggestions = buildSuggestions({
-    missingKeywords,
+    missingKeywords: suggestionMissingKeywords,
+    missingTargetRoleSignals: targetRoleAnalysis.missingTargetRoleSignals,
     sections: input.sections,
     jdProvided: hasJobDescription,
     bulletQuality,
@@ -2904,13 +3145,17 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
 function buildSuggestions(input: {
   missingKeywords: string[];
+  missingTargetRoleSignals: string[];
   sections: { summary: boolean; experience: boolean; education: boolean; skills: boolean };
   jdProvided: boolean;
   bulletQuality: { actionVerbRatio: number; densityScore: number; tooLongCount: number; actionVerbRule?: { message?: string } };
 }): string[] {
   const suggestions: string[] = [];
+  if (input.missingTargetRoleSignals.length) {
+    suggestions.push(`Missing target-role signals: ${input.missingTargetRoleSignals.slice(0, 4).join(', ')}.`);
+  }
   if (input.missingKeywords.length) {
-    suggestions.push(`Add evidence of: ${input.missingKeywords.slice(0, 6).join(', ')}.`);
+    suggestions.push(`Show these target keywords in your Summary, Experience, or Skills: ${input.missingKeywords.slice(0, 6).join(', ')}.`);
   }
   if (!input.sections.summary) {
     suggestions.push('Add a concise professional summary at the top.');
@@ -2931,11 +3176,134 @@ function buildSuggestions(input: {
     suggestions.push(input.bulletQuality.actionVerbRule?.message || 'Start most bullets with action verbs.');
   }
   if (!input.jdProvided) {
-    suggestions.push('Upload a job description for better keyword matching.');
+    suggestions.push('Paste a job description to improve ATS keyword matching.');
   }
   return suggestions.slice(0, 7);
 }
 
+const TARGET_ROLE_TITLE_REGEX =
+  /\b(manager|lead|leader|director|head|supervisor|vp|vice president|president|principal|architect|engineer|developer|designer|analyst|consultant|specialist|coordinator|administrator|officer)\b/i;
+const TARGET_ROLE_LEADERSHIP_TOKENS = new Set([
+  'manager',
+  'lead',
+  'leader',
+  'leadership',
+  'director',
+  'head',
+  'supervisor',
+  'vp',
+  'president',
+  'principal',
+]);
+const TARGET_ROLE_LEADERSHIP_SIGNAL_REGEX =
+  /\b(led|leading|leadership|managed|managing|management|mentored|mentoring|owned|ownership|stakeholder|stakeholders|planning|planned|delivery|delivered|delegated|delegation|coordinated|coordination|supervised|supervision|roadmap|sprint|cross-functional)\b/i;
 
+function analyzeTargetRoleSignals(jdText: string, resumeText: string) {
+  const targetRoles = extractTargetRoleCandidates(jdText);
+  if (!targetRoles.length) {
+    return {
+      targetRoles: [],
+      missingTargetRoleSignals: [],
+      missingTargetRoleTokens: new Set<string>(),
+    };
+  }
 
+  const resumeTokens = tokenize(resumeText);
+  const normalizedResumeText = normalizeWhitespace(resumeText).toLowerCase();
+  const missingTargetRoleSignals = targetRoles.filter((role) =>
+    isMissingTargetRoleSignal(role, normalizedResumeText, resumeTokens),
+  );
 
+  return {
+    targetRoles,
+    missingTargetRoleSignals,
+    missingTargetRoleTokens: new Set(
+      missingTargetRoleSignals.flatMap((role) => tokenizePhrase(role)),
+    ),
+  };
+}
+
+function extractTargetRoleCandidates(text: string) {
+  const raw = String(text || '').trim();
+  if (!raw) return [];
+
+  const segments = raw
+    .split(/\r?\n|[;,|]/)
+    .map((item) => cleanTargetRoleCandidate(item))
+    .filter(Boolean);
+  if (!segments.length) return [];
+
+  const roleCandidates = segments.filter((item) => isLikelyTargetRoleCandidate(item));
+  const structuredInput = /[\r\n;,|]/.test(raw);
+  const shortInput = raw.length <= 160;
+  const looksLikeRoleList = roleCandidates.length > 0 && roleCandidates.length === segments.length && roleCandidates.length <= 6;
+
+  if (!looksLikeRoleList) return [];
+  if (!shortInput && !(structuredInput && roleCandidates.length >= 2)) return [];
+
+  const deduped = new Set<string>();
+  for (const role of roleCandidates) {
+    deduped.add(formatTargetRoleLabel(role));
+  }
+  return Array.from(deduped);
+}
+
+function cleanTargetRoleCandidate(value: string) {
+  return normalizeWhitespace(
+    value
+      .replace(/^[\s\u2022*-\d.)]+/, '')
+      .replace(/^target roles?\s*:?\s*/i, '')
+      .replace(/[.]+$/, ''),
+  );
+}
+
+function isLikelyTargetRoleCandidate(value: string) {
+  const normalized = normalizeWhitespace(value);
+  if (!normalized) return false;
+  const words = normalized.split(/\s+/).filter(Boolean);
+  if (words.length < 1 || words.length > 4) return false;
+  return TARGET_ROLE_TITLE_REGEX.test(normalized);
+}
+
+function formatTargetRoleLabel(value: string) {
+  return normalizeWhitespace(value)
+    .toLowerCase()
+    .split(' ')
+    .filter(Boolean)
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+    .join(' ');
+}
+
+function tokenizePhrase(value: string) {
+  return normalizeWhitespace(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function normalizeWhitespace(value: string) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function isMissingTargetRoleSignal(role: string, normalizedResumeText: string, resumeTokens: Set<string>) {
+  const roleTokens = tokenizePhrase(role);
+  if (!roleTokens.length) return false;
+
+  const exactRoleMatch =
+    roleTokens.length === 1
+      ? resumeTokens.has(roleTokens[0])
+      : normalizedResumeText.includes(role.toLowerCase());
+  if (exactRoleMatch) return false;
+
+  const hasAllRoleTokens = roleTokens.every((token) => resumeTokens.has(token));
+  const leadershipRole = roleTokens.some((token) => TARGET_ROLE_LEADERSHIP_TOKENS.has(token));
+  if (!leadershipRole) return !hasAllRoleTokens;
+  if (hasAllRoleTokens) return false;
+
+  const nonLeadershipTokens = roleTokens.filter((token) => !TARGET_ROLE_LEADERSHIP_TOKENS.has(token) && token !== 'team');
+  const hasLeadershipSignals = TARGET_ROLE_LEADERSHIP_SIGNAL_REGEX.test(normalizedResumeText);
+  if (!hasLeadershipSignals) return true;
+  if (!nonLeadershipTokens.length) return false;
+  return !nonLeadershipTokens.every((token) => resumeTokens.has(token));
+}

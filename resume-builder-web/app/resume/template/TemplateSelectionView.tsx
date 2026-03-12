@@ -2,38 +2,98 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { TEMPLATE_CATALOG } from 'resume-builder-shared';
 import { api, type Resume } from '@/src/lib/api';
-import { buildReviewAtsRoute, buildResumePreview, resumeFromApi } from '@/src/lib/resume-flow';
+import TemplateCatalogGrid from '@/src/components/templates/TemplateCatalogGrid';
+import {
+  buildResumePreview,
+  persistActiveResumeSelection,
+  resolveCurrentSessionResumeId,
+  resumeFromApi,
+} from '@/src/lib/resume-flow';
 import { recommendTemplates } from '@/src/lib/template-recommendation';
 import { useResumeStore, type ResumeDraft } from '@/src/lib/resume-store';
 import { TemplatePreviewFrame } from '@/src/components/TemplatePreviewFrame';
-import { resolveTemplateId, templateList, templateRegistry, type TemplateId } from '@/shared/templateRegistry';
+import { resolveTemplateId, templateRegistry, type TemplateId } from '@/shared/templateRegistry';
 
-export default function TemplateSelectionView() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const resumeId = searchParams.get('resumeId') || '';
+const TEMPLATE_OPTIONS = TEMPLATE_CATALOG.map((template) => templateRegistry[template.id]);
+
+type TemplateSelectionApiClient = Pick<typeof api, 'downloadPdf' | 'getResume' | 'ingestResume' | 'updateResume'>;
+
+type RouterLike = {
+  push: (href: string) => Promise<boolean> | void;
+  replace?: (href: string) => Promise<boolean> | void;
+};
+
+type SearchParamsLike = {
+  get: (key: string) => string | null;
+};
+
+const fallbackRouter: RouterLike = {
+  push: async () => true,
+  replace: async () => true,
+};
+
+export type TemplateSelectionViewProps = {
+  apiClient?: TemplateSelectionApiClient;
+  routerOverride?: RouterLike;
+  searchParamsOverride?: SearchParamsLike;
+};
+
+function mergeTemplateSaveResult(current: Resume | null, updated: Resume, template: TemplateId): Resume {
+  if (!current || current.id !== updated.id) {
+    return {
+      ...updated,
+      templateId: template,
+    };
+  }
+  return {
+    ...current,
+    id: updated.id || current.id,
+    userId: updated.userId || current.userId,
+    createdAt: updated.createdAt || current.createdAt,
+    updatedAt: updated.updatedAt || current.updatedAt,
+    templateId: template,
+  };
+}
+
+export default function TemplateSelectionView({
+  apiClient = api,
+  routerOverride,
+  searchParamsOverride,
+}: TemplateSelectionViewProps = {}) {
+  const nextRouter = process.env.NEXT_TEST_MOCK_ROUTER === '1' ? null : useRouter();
+  const nextSearchParams = process.env.NEXT_TEST_MOCK_ROUTER === '1' ? null : useSearchParams();
+  const router = routerOverride ?? nextRouter ?? fallbackRouter;
+  const searchParams = searchParamsOverride ?? nextSearchParams ?? new URLSearchParams();
+  const requestedResumeId = String(searchParams.get('resumeId') || '').trim();
+  const resumeId = resolveCurrentSessionResumeId(requestedResumeId);
+  const templateQuery = String(searchParams.get('template') || '').trim();
+  const hasTemplateQuery = Boolean(templateQuery);
+  const requestedTemplate = resolveTemplateId(templateQuery, 'classic');
   const [resumeData, setResumeData] = useState<Resume | null>(null);
   const [resumeDraft, setResumeDraft] = useState<ResumeDraft | null>(null);
   const [loading, setLoading] = useState(Boolean(resumeId));
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [toast, setToast] = useState('');
-  const [selectedTemplate, setSelectedTemplate] = useState<TemplateId>('classic');
-  const [hoveredTemplate, setHoveredTemplate] = useState<TemplateId | ''>('');
+  const [selectedTemplate, setSelectedTemplate] = useState<TemplateId>(requestedTemplate);
+  const [pendingUploadFileName, setPendingUploadFileName] = useState('');
   const pendingTemplateSaveRef = useRef<Promise<void> | null>(null);
   const templateSaveRunRef = useRef(0);
-  const activeTemplate = hoveredTemplate || selectedTemplate;
-  const activeTemplateId = resolveTemplateId(activeTemplate || selectedTemplate, 'classic');
-  const activeTemplateMeta = useMemo(() => templateList.find((template) => template.id === activeTemplateId), [activeTemplateId]);
-  const ActiveTemplateComponent = templateRegistry[activeTemplateId].component;
+  const activeTemplateMeta = useMemo(() => TEMPLATE_OPTIONS.find((template) => template.id === selectedTemplate), [selectedTemplate]);
+  const ActiveTemplateComponent = templateRegistry[selectedTemplate].component;
   const previewResume = useMemo(() => (resumeDraft ? buildResumePreview(resumeDraft) : null), [resumeDraft]);
   const recommendation = useMemo(() => (resumeDraft ? recommendTemplates(resumeDraft) : null), [resumeDraft]);
   const setResumeStore = useResumeStore((state) => state.setResume);
 
   const applySavedTemplate = (updated: Resume, template: TemplateId, toastText = '') => {
-    setResumeData(updated);
-    const draft = resumeFromApi(updated);
+    const nextResume = mergeTemplateSaveResult(resumeData, updated, template);
+    persistActiveResumeSelection(nextResume.id || resumeId);
+    setResumeData(nextResume);
+    const draft = { ...resumeFromApi(nextResume), templateId: template };
     setResumeDraft(draft);
     setResumeStore(() => draft);
     setSelectedTemplate(template);
@@ -41,22 +101,29 @@ export default function TemplateSelectionView() {
   };
 
   useEffect(() => {
+    if (resumeId) {
+      persistActiveResumeSelection(resumeId);
+    }
+  }, [resumeId]);
+
+  useEffect(() => {
     if (!resumeId) {
-      setError('Resume ID not provided.');
+      setError('Select a saved resume or upload a new one to preview templates.');
       setLoading(false);
       return;
     }
     let cancelled = false;
     setLoading(true);
     setError('');
-    api.getResume(resumeId)
+    apiClient.getResume(resumeId)
       .then((data) => {
         if (cancelled) return;
+        const initialTemplate = hasTemplateQuery ? requestedTemplate : resolveTemplateId(data.templateId || '', 'classic');
         setResumeData(data);
-        const draft = resumeFromApi(data);
+        const draft = { ...resumeFromApi(data), templateId: initialTemplate };
         setResumeDraft(draft);
         setResumeStore(() => draft);
-        setSelectedTemplate(resolveTemplateId(data.templateId || '', 'classic'));
+        setSelectedTemplate(initialTemplate);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -68,12 +135,14 @@ export default function TemplateSelectionView() {
     return () => {
       cancelled = true;
     };
-  }, [resumeId, setResumeStore]);
+  }, [apiClient, hasTemplateQuery, requestedTemplate, resumeId, setResumeStore]);
 
   useEffect(() => {
-    if (!resumeData?.templateId) return;
-    setSelectedTemplate(resolveTemplateId(resumeData.templateId, 'classic'));
-  }, [resumeData]);
+    if (!hasTemplateQuery) return;
+    setSelectedTemplate(requestedTemplate);
+    setResumeDraft((prev) => (prev ? { ...prev, templateId: requestedTemplate } : prev));
+    setResumeStore((prev) => ({ ...prev, templateId: requestedTemplate }));
+  }, [hasTemplateQuery, requestedTemplate, setResumeStore]);
 
   useEffect(() => {
     if (!toast) return;
@@ -86,7 +155,7 @@ export default function TemplateSelectionView() {
     setSaving(true);
     setError('');
     const runId = ++templateSaveRunRef.current;
-    const savePromise = api.updateResume(resumeId, { templateId: template })
+    const savePromise = apiClient.updateResume(resumeId, { templateId: template })
       .then((updated) => {
         applySavedTemplate(updated, template, toastText);
       })
@@ -104,37 +173,54 @@ export default function TemplateSelectionView() {
     return savePromise;
   };
 
-  const handleSelectTemplate = (template: TemplateId) => {
+  const handlePreviewTemplate = (template: TemplateId) => {
     setSelectedTemplate(template);
     setResumeDraft((prev) => (prev ? { ...prev, templateId: template } : prev));
     setResumeStore((prev) => ({ ...prev, templateId: template }));
-    persistTemplate(template).catch(() => undefined);
+    setToast('');
   };
 
   const handleSaveTemplate = async () => {
-    if (!resumeId) return;
-    setSaving(true);
-    setError('');
-    const runId = ++templateSaveRunRef.current;
-    const savePromise = api.updateResume(resumeId, { templateId: selectedTemplate })
-      .then((updated) => {
-        applySavedTemplate(updated, selectedTemplate, 'Template saved');
-      })
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : 'Failed to save template.');
-        throw err;
-      })
-      .finally(() => {
-        if (templateSaveRunRef.current === runId) {
-          pendingTemplateSaveRef.current = null;
-          setSaving(false);
-        }
-      });
-    pendingTemplateSaveRef.current = savePromise;
     try {
-      await savePromise;
+      await persistTemplate(selectedTemplate, 'Template applied.');
     } catch {
       // surfaced in state
+    }
+  };
+
+  const handleUpload = async (file?: File) => {
+    if (!file || !resumeId) return;
+    setPendingUploadFileName(file.name);
+    setUploading(true);
+    setError('');
+    setToast('');
+    try {
+      const result = await apiClient.ingestResume(resumeId, file);
+      persistActiveResumeSelection(result.resume.id || resumeId);
+      const nextDraft = { ...resumeFromApi(result.resume), templateId: selectedTemplate };
+      setResumeData(result.resume);
+      setResumeDraft(nextDraft);
+      setResumeStore(() => nextDraft);
+      setToast(`Preview updated from ${file.name}.`);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to replace resume.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleDownload = async () => {
+    if (!resumeId) return;
+    setDownloading(true);
+    setError('');
+    setToast('');
+    try {
+      await apiClient.downloadPdf(resumeId, selectedTemplate);
+      setToast('PDF download started.');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to export PDF.');
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -143,8 +229,8 @@ export default function TemplateSelectionView() {
     return (
       <main className="grid">
         <section className="card col-12">
-          <h2>Select a resume to edit</h2>
-          <p className="small">Specify a resume ID in the URL to choose a template.</p>
+          <h2>Select a resume to preview</h2>
+          <p className="small">Select a saved resume or upload a new one to preview templates.</p>
         </section>
       </main>
     );
@@ -163,64 +249,24 @@ export default function TemplateSelectionView() {
             <p className="small">{error}</p>
           </div>
         )}
-        <div className="template-grid" style={{ marginTop: 12 }}>
-          {templateList.map((template) => {
-            const TemplateComponent = template.component;
-            return (
-              <button
-                key={template.id}
-                type="button"
-                className={`template-card ${template.id === selectedTemplate ? 'active' : ''}`}
-                onMouseEnter={() => setHoveredTemplate(template.id)}
-                onMouseLeave={() => setHoveredTemplate('')}
-                onFocus={() => setHoveredTemplate(template.id)}
-                onBlur={() => setHoveredTemplate('')}
-                onClick={() => handleSelectTemplate(template.id)}
-                disabled={loading}
-              >
-                <div className="template-card__preview">
-                  {previewReady ? (
-                    <TemplatePreviewFrame>
-                      <div
-                        data-template-id={template.id}
-                        data-render-context="preview"
-                        data-css-bundle="globals.css#ats-template"
-                      >
-                        <span style={{ display: 'none' }}>{`TEMPLATE_FINGERPRINT:${template.id}`}</span>
-                        <TemplateComponent resumeData={previewResume!} />
-                      </div>
-                    </TemplatePreviewFrame>
-                  ) : (
-                    <p className="small">Resume preview unavailable.</p>
-                  )}
-                </div>
-                <div className="template-card__meta">
-                  <div>
-                    <strong>{template.name}</strong>
-                    <div className="small">{template.description}</div>
-                    <div className="small template-card__availability">Available in PDF</div>
-                    {template.id === recommendation?.primaryTemplateId && recommendation.reasons[0] && (
-                      <p className="small template-card__reason">
-                        Why recommended? {recommendation.reasons[0]}
-                      </p>
-                    )}
-                  </div>
-                  <div className="template-card__meta-badges">
-                    <span className="pill">{template.id === selectedTemplate ? 'Applied' : 'Preview'}</span>
-                    {template.id === recommendation?.primaryTemplateId && (
-                      <span className="pill recommended" title={recommendation.reasons.join(' ')}>
-                        Recommended
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
+        {previewReady || loading ? (
+          <div style={{ marginTop: 12 }}>
+            <TemplateCatalogGrid
+              templates={TEMPLATE_OPTIONS}
+              previewResume={previewReady ? previewResume : null}
+              selectedTemplate={selectedTemplate}
+              recommendation={recommendation}
+              onSelectTemplate={handlePreviewTemplate}
+              primaryActionLabel="Preview"
+              disabled={loading || uploading}
+              previewLoading={loading}
+              dataTestId="template-selection-grid"
+            />
+          </div>
+        ) : null}
       </section>
 
-      <section className="card col-5 preview-pane">
+      <section className="card col-5 preview-pane" data-testid="template-selection-preview" data-active-template={selectedTemplate}>
         <div className="template-live">
           <div className="template-live__header">
             <div>
@@ -228,22 +274,22 @@ export default function TemplateSelectionView() {
               <p className="small">Now viewing {activeTemplateMeta?.name}</p>
               {recommendation && (
                 <p className="small template-live__recommendation">
-                  Recommended: {templateList.find((item) => item.id === recommendation.primaryTemplateId)?.name}.{' '}
+                  Recommended: {TEMPLATE_OPTIONS.find((item) => item.id === recommendation.primaryTemplateId)?.name}.{' '}
                   {recommendation.reasons[0]}
                 </p>
               )}
             </div>
-            <span className="pill">{activeTemplateId === selectedTemplate ? 'Applied' : 'Previewing'}</span>
+            <span className="pill">{resumeData?.templateId === selectedTemplate ? 'Applied' : 'Previewing'}</span>
           </div>
           <div className="template-live__canvas">
             {previewResume ? (
               <TemplatePreviewFrame>
                 <div
-                  data-template-id={activeTemplateId}
+                  data-template-id={selectedTemplate}
                   data-render-context="preview"
                   data-css-bundle="globals.css#ats-template"
                 >
-                  <span style={{ display: 'none' }}>{`TEMPLATE_FINGERPRINT:${activeTemplateId}`}</span>
+                  <span style={{ display: 'none' }}>{`TEMPLATE_FINGERPRINT:${selectedTemplate}`}</span>
                   <ActiveTemplateComponent resumeData={previewResume} />
                 </div>
               </TemplatePreviewFrame>
@@ -254,37 +300,35 @@ export default function TemplateSelectionView() {
         </div>
 
         <div style={{ marginTop: 16, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <label className="btn secondary" style={{ cursor: uploading || !resumeId ? 'not-allowed' : 'pointer' }}>
+            {uploading ? `Uploading ${pendingUploadFileName || 'resume'}...` : 'Upload / Replace Resume'}
+            <input
+              type="file"
+              accept=".pdf,.docx,.txt"
+              style={{ display: 'none' }}
+              disabled={uploading || loading || !resumeId}
+              data-testid="template-upload-input"
+              onChange={(event) => handleUpload(event.target.files?.[0])}
+            />
+          </label>
+          <button className="btn" onClick={handleSaveTemplate} disabled={!resumeDraft || saving}>
+            {saving ? 'Applying...' : 'Use Template'}
+          </button>
           <button
             className="btn secondary"
-            onClick={async () => {
-              if (!resumeId) {
-                router.push(buildReviewAtsRoute('', resumeId));
-                return;
-              }
-              try {
-                if (pendingTemplateSaveRef.current) {
-                  await pendingTemplateSaveRef.current;
-                } else if (resolveTemplateId(String(resumeData?.templateId || ''), 'classic') !== selectedTemplate) {
-                  await persistTemplate(selectedTemplate);
-                }
-                router.push(buildReviewAtsRoute('', resumeId));
-              } catch {
-                // keep user on page
-              }
-            }}
+            onClick={() => router.push(resumeId ? `/resume?id=${encodeURIComponent(resumeId)}&template=${encodeURIComponent(selectedTemplate)}` : '/resume')}
+            disabled={!resumeId}
           >
-            Back to editor
+            Edit Resume
           </button>
-          <button className="btn" onClick={handleSaveTemplate} disabled={!resumeDraft || saving}>
-            {saving ? 'Saving...' : 'Save template'}
+          <button className="btn secondary" onClick={handleDownload} disabled={!resumeId || downloading}>
+            {downloading ? 'Preparing PDF...' : 'Download PDF'}
+          </button>
+          <button className="btn secondary" onClick={() => router.push('/dashboard')}>
+            Back to Dashboard
           </button>
           {toast && <span className="small" style={{ marginLeft: 'auto' }}>{toast}</span>}
         </div>
-        {error && (
-          <div className="message-banner" style={{ marginTop: 12 }}>
-            <p className="small">{error}</p>
-          </div>
-        )}
       </section>
     </main>
   );

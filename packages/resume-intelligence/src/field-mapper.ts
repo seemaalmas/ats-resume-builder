@@ -48,6 +48,7 @@ const TITLE_BLOCKLIST = new Set([
 const CONTACT_LABEL_RE = /\b(email|mobile|phone|contact|linkedin|github|portfolio|address|location)\b/i;
 const NAME_BLOCKLIST_RE = /\b(skills?|technical|soft|experience|employment|education|communication|teamwork|leadership|problem[-\s]?solving|languages|achievements?|summary|profile|objective)\b/i;
 const COMPANY_SUFFIX_RE = /\b(inc|llc|ltd|corp|company|technologies|systems|labs|solutions|group|studio|partners|bank|consulting|digital)\b/i;
+const LEGACY_BULLET_PREFIX_RE = /^\s*(?:[-*•·]+|\d{1,3}[.)]|[a-z][.)])?\s*(impact|achievement|result|highlights?|accomplishment)s?:\s*/i;
 
 type HeaderMapping = {
   contact?: Contact;
@@ -225,11 +226,12 @@ function mapExperience(parsed: ParsedResumeText) {
     return false;
   };
 
-  for (const line of source) {
-    const normalizedLine = cleanLooseText(line);
+  for (const rawLine of source) {
+    const normalizedSourceLine = normalizeLegacyBulletPrefix(rawLine);
+    const normalizedLine = cleanLooseText(normalizedSourceLine);
     if (!normalizedLine) continue;
 
-    const heading = normalizeHeading(line);
+    const heading = normalizeHeading(normalizedSourceLine);
     if (heading && heading !== 'experience') {
       if (/education|projects|certifications|skills/.test(heading)) {
         pushCurrent();
@@ -237,7 +239,7 @@ function mapExperience(parsed: ParsedResumeText) {
       continue;
     }
 
-    if (isCrossSectionBoundary(line)) {
+    if (isCrossSectionBoundary(normalizedSourceLine)) {
       if (isDateLine(normalizedLine)) {
         const dates = extractDates(normalizedLine);
         assignDatesToCurrentOrRecent(dates.start, dates.end);
@@ -246,7 +248,7 @@ function mapExperience(parsed: ParsedResumeText) {
       continue;
     }
 
-    const bullet = extractBulletLine(line);
+    const bullet = extractBulletLine(normalizedSourceLine);
     if (bullet) {
       if (pendingRole && currentCompany && !current) {
         startCurrent({ company: currentCompany, role: pendingRole });
@@ -689,7 +691,9 @@ function isPlaceholderValue(value: string) {
 
 function collectLikelyExperienceLines(lines: string[]) {
   const output: string[] = [];
-  for (const line of lines) {
+  for (const rawLine of lines) {
+    const line = normalizeLegacyBulletPrefix(rawLine);
+    if (!line) continue;
     if (looksLikeExperienceHeader(line) || looksLikeCompany(line) || looksLikeRole(line) || line.startsWith('-') || isDateLine(line)) {
       output.push(line);
       continue;
@@ -716,17 +720,23 @@ function buildExperienceSource(parsed: ParsedResumeText) {
 }
 
 function looksLikeExperienceHeader(line: string) {
-  if (!line || line.startsWith('-')) return false;
-  const cleaned = cleanLooseText(line);
+  const normalizedLine = normalizeLegacyBulletPrefix(line);
+  if (!normalizedLine || normalizedLine.startsWith('-')) return false;
+  const cleaned = cleanLooseText(normalizedLine);
   if (!cleaned) return false;
   const hasDate = isDateLine(cleaned);
   const stripped = stripDates(cleaned);
   const hasSubstanceAfterDates = stripped.replace(/[@|]/g, ' ').replace(/\s+/g, ' ').trim().length >= 3;
   const hasRole = looksLikeRole(cleaned);
   const hasCompany = looksLikeCompany(cleaned);
-  const hasDelimiter = /@|\sat\s|\s\|\s|\s-\s|\s—\s|\s–\s|â€”|â€“/i.test(line);
-  if (hasDate && (hasRole || hasCompany || hasSubstanceAfterDates)) return true;
-  return (hasRole && hasCompany) || (hasRole && hasDelimiter) || (hasDelimiter && hasSubstanceAfterDates);
+  const hasRoleCompanyPattern = Boolean(parseRoleCompanyPair(stripped));
+  const hasDelimiter = /@|\sat\s|\s\|\s|\s-\s|\s—\s|\s–\s|â€”|â€“/i.test(cleaned);
+
+  // New experiences must be role/company headers, not repeated bullet prefixes.
+  if (hasDate) {
+    return hasRoleCompanyPattern || (hasRole && hasCompany) || (hasDelimiter && hasRoleCompanyPattern);
+  }
+  return hasRoleCompanyPattern || (hasRole && hasCompany) || (hasRole && hasDelimiter && hasSubstanceAfterDates);
 }
 
 function parseExperienceHeader(line: string) {
@@ -844,6 +854,24 @@ function splitRoleCompany(line: string) {
   }
   if (looksLikeCompany(normalized)) return { role: '', company: cleanCompanyName(normalized) };
   return { role: normalized, company: '' };
+}
+
+function parseRoleCompanyPair(line: string) {
+  const split = splitRoleCompany(line);
+  const role = cleanLooseText(split.role);
+  const company = cleanCompanyName(split.company);
+  if (!role || !company) return null;
+  if (!looksLikeRole(role) && !looksLikeRoleTitle(role)) return null;
+  if (!looksLikeCompany(company)) return null;
+  return { role, company };
+}
+
+function normalizeLegacyBulletPrefix(line: string) {
+  const raw = String(line || '');
+  if (!LEGACY_BULLET_PREFIX_RE.test(raw)) return raw;
+  const stripped = raw.replace(LEGACY_BULLET_PREFIX_RE, '').trim();
+  if (!stripped) return '';
+  return `- ${stripped}`;
 }
 
 function looksLikeRole(line: string) {

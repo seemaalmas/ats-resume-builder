@@ -145,3 +145,18 @@ test('/resumes/:id/ats-score marks JD usage when provided', async () => {
   assert.ok(response.body.atsScore <= 100);
   await app.close();
 });
+
+test('/resumes/:id/ats-score can be called repeatedly without ATS-specific 429 blocking', async () => {
+  const prisma = createPrismaState();
+  const app = await createApp(prisma);
+
+  for (let i = 0; i < 25; i += 1) {
+    const response = await request(app.getHttpServer())
+      .post('/resumes/resume-1/ats-score')
+      .send({ jdText: 'Platform engineer building resilient distributed systems.' })
+      .expect(201);
+    assert.equal(response.body.resumeId, 'resume-1');
+  }
+
+  await app.close();
+});

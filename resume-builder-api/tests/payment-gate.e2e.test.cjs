@@ -181,24 +181,41 @@ test('free user can access ATS and PDF when payment gate disabled', async () => 
   }
 });
 
-test('free user blocked for ATS and PDF when payment gate enabled', async () => {
+test('stored payment flag does not block ATS or PDF while non-billing mode is active', async () => {
   const prisma = createInMemoryPrisma(false);
   const settingsService = new SettingsService(prisma);
   await settingsService.ensureDefaults();
   await settingsService.setPaymentFeatureEnabled(true);
   const resumeService = new ResumeService(prisma, settingsService);
 
-  await resumeService.atsScoreForResume('user-1', 'resume-1');
-  await resumeService.atsScoreForResume('user-1', 'resume-1');
-  const blockedAts = resumeService.atsScoreForResume('user-1', 'resume-1');
-  await assert.rejects(
-    blockedAts,
-    (error) => error instanceof Error && error.message.includes('FREE_PLAN_ATS_LIMIT_EXCEEDED'),
-  );
+  const dummyBuffer = Buffer.from('pdf-bytes');
+  const originalLaunch = puppeteer.launch;
+  const originalDefaultLaunch = puppeteer.default?.launch;
+  const mockLaunch = async () => ({
+    newPage: async () => ({
+      setContent: async () => {},
+      pdf: async () => dummyBuffer,
+    }),
+    close: async () => {},
+  });
+  puppeteer.launch = mockLaunch;
+  if (puppeteer.default) {
+    puppeteer.default.launch = mockLaunch;
+  }
 
-  const pdfPromise = resumeService.generatePdf('user-1', 'resume-1');
-  await assert.rejects(
-    pdfPromise,
-    (error) => error instanceof Error && error.message.includes('Free plan does not allow PDF export.'),
-  );
+  try {
+    for (let i = 0; i < 3; i += 1) {
+      const atsResult = await resumeService.atsScoreForResume('user-1', 'resume-1');
+      assert.equal(typeof atsResult.atsScore, 'number');
+    }
+
+    const pdf = await resumeService.generatePdf('user-1', 'resume-1');
+    assert.ok(Buffer.isBuffer(pdf));
+    assert.equal(pdf.toString('utf8'), dummyBuffer.toString('utf8'));
+  } finally {
+    puppeteer.launch = originalLaunch;
+    if (puppeteer.default && originalDefaultLaunch) {
+      puppeteer.default.launch = originalDefaultLaunch;
+    }
+  }
 });

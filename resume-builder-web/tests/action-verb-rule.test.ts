@@ -73,3 +73,15 @@ test('action-verb state respects the 60% boundary', () => {
   assert.equal(failing.passes, false);
   assert.equal(failing.remainingToPass, 2);
 });
+
+test('action-verb normalization ignores legacy bullet labels before checking starter verb', () => {
+  const state = createActionVerbRuleState(entries([
+    'Impact: Led migration of template rendering pipeline.',
+    '- Achievement: Built export automation for PDF generation.',
+    'Result: Reduced render latency by 40%.',
+  ]), ACTION_VERB_REQUIRED_RATIO);
+
+  assert.equal(state.passes, true);
+  assert.equal(state.failures.length, 0);
+  assert.equal(state.strongBullets, 3);
+});

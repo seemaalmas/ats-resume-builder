@@ -13,10 +13,18 @@ import { OtpAuthService } from './otp-auth.service';
 import { SMS_PROVIDER } from './sms.provider';
 import { TwilioVerifyProvider } from './twilio-verify.provider';
 import { DevOtpProvider } from './dev-otp.provider';
+import { ResumeModule } from '../resume/resume.module';
+import { GoogleAuthController } from './google-auth.controller';
+import { GoogleDriveController } from './google-drive.controller';
+import { DriveSessionService } from './drive-session.service';
+import { GOOGLE_DRIVE_CLIENT, GoogleDriveHttpClient, GoogleDriveService } from './google-drive.service';
+import { REDIS_CLIENT, RedisClientService } from './redisClient';
+import { GoogleTokenStore } from './tokenStore';
 
 @Module({
   imports: [
     ConfigModule,
+    ResumeModule,
     PassportModule,
     JwtModule.registerAsync({
       inject: [ConfigService],
@@ -37,6 +45,11 @@ import { DevOtpProvider } from './dev-otp.provider';
     OtpAuthService,
     TwilioVerifyProvider,
     DevOtpProvider,
+    DriveSessionService,
+    RedisClientService,
+    GoogleTokenStore,
+    GoogleDriveService,
+    GoogleDriveHttpClient,
     {
       provide: SMS_PROVIDER,
       inject: [ConfigService, TwilioVerifyProvider, DevOtpProvider],
@@ -46,8 +59,16 @@ import { DevOtpProvider } from './dev-otp.provider';
         return dev;
       },
     },
+    {
+      provide: GOOGLE_DRIVE_CLIENT,
+      useExisting: GoogleDriveHttpClient,
+    },
+    {
+      provide: REDIS_CLIENT,
+      useExisting: RedisClientService,
+    },
   ],
-  controllers: [AuthController, OtpController],
+  controllers: [AuthController, OtpController, GoogleAuthController, GoogleDriveController],
   exports: [AuthService],
 })
 export class AuthModule {}

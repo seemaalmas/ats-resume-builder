@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { api, getAccessToken, type Resume } from '@/src/lib/api';
 import { templates, type TemplateId } from '@/src/components/TemplatePreview';
 import ResumeTemplateRender from '@/src/components/ResumeTemplateRender';
-import { buildResumePreview, resumeFromApi } from '@/src/lib/resume-flow';
+import { buildResumePreview, persistActiveResumeSelection, resolveCurrentSessionResumeId, resumeFromApi } from '@/src/lib/resume-flow';
 
 const VALID_TEMPLATE_IDS = new Set(templates.map((template) => template.id));
 
@@ -20,7 +20,8 @@ function resolveTemplateId(value: string, fallback: TemplateId = 'classic'): Tem
 export default function TemplatePreviewPageClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const resumeId = searchParams.get('resumeId') || '';
+  const requestedResumeId = String(searchParams.get('resumeId') || '').trim();
+  const resumeId = resolveCurrentSessionResumeId(requestedResumeId);
   const initialTemplate = resolveTemplateId(searchParams.get('template') || '');
   const [templateId, setTemplateId] = useState<TemplateId>(initialTemplate);
   const [resume, setResume] = useState<Resume | null>(null);
@@ -37,6 +38,9 @@ export default function TemplatePreviewPageClient() {
 
   useEffect(() => {
     setActiveResumeId(resumeId);
+    if (resumeId) {
+      persistActiveResumeSelection(resumeId);
+    }
   }, [resumeId]);
 
   useEffect(() => {
@@ -49,13 +53,13 @@ export default function TemplatePreviewPageClient() {
     setLoading(true);
     setError('');
     const load = async () => {
-      let targetResumeId = resumeId;
+      const targetResumeId = resumeId;
       if (!targetResumeId) {
-        const list = await api.listResumes();
-        targetResumeId = list[0]?.id || '';
-        if (!targetResumeId) {
-          throw new Error('No resumes found. Create a resume first.');
+        if (!cancelled) {
+          setActiveResumeId('');
+          setResume(null);
         }
+        throw new Error('Select a saved resume or upload a new one to preview templates.');
       }
       const payload = await api.getResume(targetResumeId);
       if (cancelled) return;
@@ -102,6 +106,17 @@ export default function TemplatePreviewPageClient() {
   };
 
   const selectedTemplate = templates.find((item) => item.id === templateId) || templates[0];
+
+  if (!activeResumeId && !loading) {
+    return (
+      <main className="grid">
+        <section className="card col-12">
+          <h2>Template Preview</h2>
+          <p className="small">Select a saved resume or upload a new one to preview templates.</p>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main className="grid template-grid-layout">

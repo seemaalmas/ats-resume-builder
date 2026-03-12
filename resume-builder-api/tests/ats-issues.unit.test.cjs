@@ -144,3 +144,24 @@ test('score does not default to 100 when JD is missing', async () => {
   assert.ok(infoIssue);
   assert.equal(infoIssue.severity, 'info');
 });
+
+test('multiple target roles use ATS role-signal wording instead of evidence wording', async () => {
+  const prisma = createPrisma(false, 'Built automation for platform reliability.');
+  const settingsService = new SettingsService(prisma);
+  await settingsService.ensureDefaults();
+  const resumeService = new ResumeService(prisma, settingsService);
+
+  const result = await resumeService.atsScoreForResume(
+    'user-1',
+    'resume-1',
+    'Team Lead\nManager\nTechnical Manager',
+  );
+
+  assert.ok(
+    result.improvementSuggestions.some((item) =>
+      item.includes('Missing target-role signals: Team Lead, Manager, Technical Manager.'),
+    ),
+  );
+  assert.ok(result.improvementSuggestions.every((item) => !/add evidence of/i.test(item)));
+  assert.ok(result.improvementSuggestions.every((item) => !/upload evidence/i.test(item)));
+});

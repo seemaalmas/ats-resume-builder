@@ -173,7 +173,7 @@ async function createApp(prisma) {
   return app;
 }
 
-test('free plan allows first 2 resumes and blocks third; ATS allowed for first 2 scans then blocked', async () => {
+test('free-plan limits do not block resume creation or ATS checks while non-billing mode is active', async () => {
   const prisma = createPrisma();
   const app = await createApp(prisma);
 
@@ -192,8 +192,8 @@ test('free plan allows first 2 resumes and blocks third; ATS allowed for first 2
   const third = await request(app.getHttpServer())
     .post('/resumes')
     .send(buildResumePayload('Free Resume 3'))
-    .expect(403);
-  assert.match(JSON.stringify(third.body), /FREE_PLAN_RESUME_LIMIT_EXCEEDED/i);
+    .expect(201);
+  assert.equal(third.body.title, 'Free Resume 3');
 
   await request(app.getHttpServer())
     .post(`/resumes/${first.body.id}/ats-score`)
@@ -205,15 +205,16 @@ test('free plan allows first 2 resumes and blocks third; ATS allowed for first 2
     .send({})
     .expect(201);
 
-  const blockedAts = await request(app.getHttpServer())
-    .post(`/resumes/${first.body.id}/ats-score`)
+  await request(app.getHttpServer())
+    .post(`/resumes/${third.body.id}/ats-score`)
     .send({})
-    .expect(403);
-  assert.match(JSON.stringify(blockedAts.body), /FREE_PLAN_ATS_LIMIT_EXCEEDED/i);
+    .expect(201);
 
   const state = prisma.__getState();
   assert.equal(state.user.resumesLimit, 2);
   assert.equal(state.user.atsScansLimit, 2);
+  assert.equal(state.resumes.length, 3);
+  assert.equal(state.user.atsScansUsed, 3);
 
   await app.close();
 });
