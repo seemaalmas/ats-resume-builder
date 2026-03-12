@@ -91,3 +91,69 @@ test('Consultant Clean template keeps ATS naming and single-column sections', ()
   assert(markup.includes('<h2>Experience</h2>'));
   assert(!markup.includes('Impact:'), 'Consultant template should not force legacy prefixes');
 });
+
+const skillsOnlyResume: ResumeImportResult = {
+  title: 'Skills Test',
+  contact: { fullName: 'Test User' },
+  summary: '',
+  skills: [],
+  technicalSkills: ['React', 'Node.js'],
+  softSkills: ['Teamwork'],
+  languages: [],
+  experience: [],
+  education: [],
+};
+
+test('Classic ATS template merges technicalSkills and softSkills into Skills section', () => {
+  const markup = renderToStaticMarkup(React.createElement(ClassicATS, { resumeData: skillsOnlyResume }));
+  assert(markup.includes('React'), 'Classic should display technicalSkills');
+  assert(markup.includes('Node.js'), 'Classic should display technicalSkills');
+  assert(markup.includes('Teamwork'), 'Classic should display softSkills');
+  assert(!markup.includes('Add role-relevant skills'), 'Classic should not show placeholder when skills exist');
+});
+
+test('Modern Professional template merges technicalSkills and softSkills into Skills section', () => {
+  const markup = renderToStaticMarkup(React.createElement(ModernProfessional, { resumeData: skillsOnlyResume }));
+  assert(markup.includes('React'), 'Modern should display technicalSkills');
+  assert(markup.includes('Teamwork'), 'Modern should display softSkills');
+  assert(!markup.includes('Add role-specific skills'), 'Modern should not show placeholder when skills exist');
+});
+
+test('Executive Impact template merges technicalSkills and softSkills into Skills section', () => {
+  const markup = renderToStaticMarkup(React.createElement(ExecutiveImpact, { resumeData: skillsOnlyResume }));
+  assert(markup.includes('React'), 'Executive should display technicalSkills');
+  assert(markup.includes('Teamwork'), 'Executive should display softSkills');
+});
+
+test('Minimal Clean template merges technicalSkills and softSkills into Skills section', () => {
+  const markup = renderToStaticMarkup(React.createElement(MinimalClean, { resumeData: skillsOnlyResume }));
+  assert(markup.includes('React'), 'Minimal should display technicalSkills');
+  assert(markup.includes('Teamwork'), 'Minimal should display softSkills');
+});
+
+test('Consultant Clean template merges technicalSkills and softSkills into Skills section', () => {
+  const markup = renderToStaticMarkup(React.createElement(ConsultantClean, { resumeData: skillsOnlyResume }));
+  assert(markup.includes('React'), 'Consultant should display technicalSkills');
+  assert(markup.includes('Teamwork'), 'Consultant should display softSkills');
+});
+
+test('allSkills deduplicates skills across categories', () => {
+  const dupeResume: ResumeImportResult = {
+    title: 'Dupe Test',
+    contact: { fullName: 'Test' },
+    summary: '',
+    skills: ['React', 'Leadership'],
+    technicalSkills: ['React', 'TypeScript'],
+    softSkills: ['Leadership'],
+    languages: [],
+    experience: [],
+    education: [],
+  };
+  const markup = renderToStaticMarkup(React.createElement(ClassicATS, { resumeData: dupeResume }));
+  const skillsSection = markup.slice(markup.indexOf('SKILLS'), markup.indexOf('EXPERIENCE'));
+  const reactCount = (skillsSection.match(/React/g) || []).length;
+  assert.equal(reactCount, 1, 'React should appear exactly once in skills section');
+  const leadershipCount = (skillsSection.match(/Leadership/g) || []).length;
+  assert.equal(leadershipCount, 1, 'Leadership should appear exactly once in skills section');
+  assert(skillsSection.includes('TypeScript'), 'TypeScript should appear in merged skills');
+});

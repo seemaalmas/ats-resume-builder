@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  allSkills,
   certificationItems,
   cleanList,
   contactLine,
@@ -16,7 +17,7 @@ import {
 export default function ModernProfessional({ resumeData }: TemplateProps) {
   const normalized = normalizeTemplateResume(resumeData);
   const summary = String(normalized.summary || '').trim();
-  const skills = cleanList(normalized.skills);
+  const skills = allSkills(normalized);
   const languages = cleanList(normalized.languages);
   const experience = experienceItems(normalized);
   const projects = projectItems(normalized);
