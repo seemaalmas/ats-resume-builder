@@ -1,5 +1,5 @@
 import { BadRequestException, ForbiddenException, HttpException, HttpStatus, Injectable, NotFoundException, Optional, UnprocessableEntityException } from '@nestjs/common';
-import puppeteer, { type PuppeteerLaunchOptions } from 'puppeteer';
+import puppeteer, { type LaunchOptions } from 'puppeteer';
 import { existsSync } from 'fs';
 import { PDFParse } from 'pdf-parse';
 import mammoth from 'mammoth';
@@ -449,7 +449,7 @@ export class ResumeService {
     });
 
     const chromePath = resolveChromePath();
-    const launchOptions: PuppeteerLaunchOptions = {
+    const launchOptions: LaunchOptions = {
       headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu'],
       ...(chromePath ? { executablePath: chromePath } : {}),
