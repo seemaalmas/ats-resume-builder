@@ -567,18 +567,17 @@ body.resume-embed-body .main-shell {
 
 .resume-template-render--thumbnail {
   width: 100%;
-  height: 100%;
+  height: auto;
   pointer-events: none;
+  overflow: hidden;
 }
 
-.template-card__thumbnail .resume-template-render,
-.template-card__thumbnail .template-preview-frame__container {
+.template-card__thumbnail .resume-template-render {
   width: 100%;
-  height: 100%;
 }
 
-.template-card__thumbnail .template-preview-frame__container {
-  border-radius: 8px;
+.template-card__thumbnail .resume-template-render--thumbnail .ats-template {
+  border: none;
 }
 
 .template-preview-frame__container {
@@ -602,21 +601,6 @@ body.resume-embed-body .main-shell {
   z-index: 0;
 }
 
-.template-preview-frame__page--thumbnail {
-  position: static;
-  will-change: auto;
-  backface-visibility: visible;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  text-rendering: optimizeLegibility;
-}
-
-.template-preview-frame__container--thumbnail {
-  overflow: hidden;
-  display: flex;
-  align-items: flex-start;
-  justify-content: flex-start;
-}
 
 .template-preview-frame__content {
   width: 100%;
