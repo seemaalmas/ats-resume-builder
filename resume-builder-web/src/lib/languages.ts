@@ -67,10 +67,10 @@ export function dedupeLanguages(values: string[]) {
   return output;
 }
 
-import { SOFT_SKILL_FALLBACK } from './suggestion-seeds';
+import softSeedJson from '../data/skills_soft_seed.json';
 
 const SOFT_SKILL_LOOKUP = new Set(
-  SOFT_SKILL_FALLBACK.map((item) => item.toLowerCase()),
+  ((softSeedJson as { items?: string[] }).items || []).map((item) => item.toLowerCase()),
 );
 
 export function isKnownSoftSkill(value: string) {

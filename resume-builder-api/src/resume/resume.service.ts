@@ -1,5 +1,6 @@
 import { BadRequestException, ForbiddenException, HttpException, HttpStatus, Injectable, NotFoundException, Optional, UnprocessableEntityException } from '@nestjs/common';
-import puppeteer from 'puppeteer';
+import puppeteer, { type PuppeteerLaunchOptions } from 'puppeteer';
+import { existsSync } from 'fs';
 import { PDFParse } from 'pdf-parse';
 import mammoth from 'mammoth';
 import type { Prisma } from '@prisma/client';
@@ -13,6 +14,46 @@ import type { ParsedResumeText } from 'resume-intelligence';
 import { sanitizeImportedResume } from './import-sanitizer';
 import { ACTION_VERB_REQUIRED_RATIO, analyzeActionVerbRule, normalizeBulletText, type ActionVerbFailure } from './action-verb-rule';
 import { SettingsService } from '../settings/settings.service';
+
+/**
+ * Resolve a Chrome/Chromium executable path for Puppeteer.
+ * Priority: CHROME_EXECUTABLE_PATH env > common system paths > Puppeteer default.
+ */
+function resolveChromePath(): string | undefined {
+  const envPath = process.env.CHROME_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH;
+  if (envPath && existsSync(envPath)) return envPath;
+
+  const isWin = process.platform === 'win32';
+  const isMac = process.platform === 'darwin';
+
+  const candidates: string[] = isWin
+    ? [
+        `${process.env.PROGRAMFILES || 'C:\\Program Files'}\\Google\\Chrome\\Application\\chrome.exe`,
+        `${process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)'}\\Google\\Chrome\\Application\\chrome.exe`,
+        `${process.env.LOCALAPPDATA || ''}\\Google\\Chrome\\Application\\chrome.exe`,
+        `${process.env.PROGRAMFILES || 'C:\\Program Files'}\\Microsoft\\Edge\\Application\\msedge.exe`,
+        `${process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)'}\\Microsoft\\Edge\\Application\\msedge.exe`,
+      ]
+    : isMac
+      ? [
+          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          '/Applications/Chromium.app/Contents/MacOS/Chromium',
+          '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+        ]
+      : [
+          '/usr/bin/google-chrome-stable',
+          '/usr/bin/google-chrome',
+          '/usr/bin/chromium-browser',
+          '/usr/bin/chromium',
+          '/snap/bin/chromium',
+        ];
+
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
 const KNOWN_SPOKEN_LANGUAGES = new Map<string, string>([
   ['english', 'English'],
   ['hindi', 'Hindi'],
@@ -407,10 +448,27 @@ export class ResumeService {
       data: { pdfExportsUsed: updatedUser.pdfExportsUsed + 1 },
     });
 
-    const browser = await puppeteer.launch({
+    const chromePath = resolveChromePath();
+    const launchOptions: PuppeteerLaunchOptions = {
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    });
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu'],
+      ...(chromePath ? { executablePath: chromePath } : {}),
+    };
+
+    let browser;
+    try {
+      browser = await puppeteer.launch(launchOptions);
+    } catch (launchError) {
+      const hint = chromePath
+        ? `Tried Chrome at: ${chromePath}`
+        : 'No Chrome/Chromium found. Install Chrome or set CHROME_EXECUTABLE_PATH env variable.';
+      console.error(`[pdf-export] Chrome launch failed. ${hint}`, launchError);
+      throw new HttpException(
+        `PDF generation unavailable: Chrome browser not found. ${hint}`,
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+
     try {
       const page = await browser.newPage();
       await page.setContent(html, { waitUntil: 'networkidle0' });
