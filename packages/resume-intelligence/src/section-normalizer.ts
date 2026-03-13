@@ -8,12 +8,13 @@ export type CanonicalSection =
   | 'unmapped';
 
 const SECTION_SYNONYMS: Record<CanonicalSection, string[]> = {
-  summary: ['summary', 'professional summary', 'profile', 'about', 'about me', 'objective', 'career summary'],
+  summary: ['summary', 'professional summary', 'profile', 'profile summary', 'about', 'about me', 'objective', 'career summary', 'career objective'],
   skills: [
     'skills',
     'technical skills',
     'core skills',
     'key skills',
+    'key skill',
     'competencies',
     'core competencies',
     'technologies',
@@ -29,8 +30,8 @@ const SECTION_SYNONYMS: Record<CanonicalSection, string[]> = {
     'professional experience',
     'career history',
   ],
-  education: ['education', 'academics', 'academic background', 'education history'],
-  projects: ['projects', 'notable projects', 'research', 'achievements'],
+  education: ['education', 'academics', 'academic background', 'education history', 'qualifications'],
+  projects: ['projects', 'notable projects', 'research', 'achievements', 'accomplishments'],
   certifications: ['certifications', 'licenses', 'certificates'],
   unmapped: [],
 };
@@ -59,11 +60,16 @@ export function normalizeHeading(line: string): CanonicalSection | '' {
 
 const KNOWN_HEADING_PHRASES = new Set([
   'professional summary',
+  'profile summary',
+  'career summary',
+  'career objective',
   'work experience',
+  'professional experience',
   'technical skills',
   'soft skills',
   'education',
   'achievements',
+  'accomplishments',
   'languages',
   'summary',
   'skills',
@@ -74,7 +80,6 @@ const KNOWN_HEADING_PHRASES = new Set([
   'employment',
   'employment history',
   'career history',
-  'career summary',
   'profile',
   'about',
   'about me',
@@ -84,11 +89,13 @@ const KNOWN_HEADING_PHRASES = new Set([
   'technologies',
   'academics',
   'academic background',
+  'qualifications',
   'notable projects',
   'research',
   'work history',
   'core skills',
   'key skills',
+  'key skill',
   'licenses',
   'education history',
 ]);

@@ -1586,14 +1586,22 @@ function convertDocxHtmlToStructuredText(html: string): string {
     return cleaned ? `\n\n${cleaned.toUpperCase()}\n` : '';
   });
 
-  // Convert bold/strong standalone paragraphs to uppercase (often section headings in DOCX)
-  text = text.replace(/<p[^>]*>\s*<(?:strong|b)>([\s\S]*?)<\/(?:strong|b)>\s*<\/p>/gi, (_m, inner) => {
-    const cleaned = stripHtmlTags(inner).trim();
-    // Only uppercase short text that looks like a heading (no sentence punctuation)
-    if (cleaned && cleaned.length <= 64 && !/[.,;!?]/.test(cleaned)) {
-      return `\n\n${cleaned.toUpperCase()}\n`;
+  // Handle bold text at START of paragraphs — split into heading + content
+  // e.g. <p><strong>Professional Experience</strong> Assistant Vice President...</p>
+  text = text.replace(/<p[^>]*>\s*<(?:strong|b)>([\s\S]*?)<\/(?:strong|b)>([\s\S]*?)<\/p>/gi, (_m, boldInner, rest) => {
+    const boldText = stripHtmlTags(boldInner).trim();
+    const restText = stripHtmlTags(rest).trim();
+    if (!boldText) return restText ? `\n${restText}\n` : '';
+    // If bold text looks like a heading (short, no sentence punctuation)
+    const isHeadingLike = boldText.length <= 64 && !/[.,;!?]/.test(boldText);
+    if (isHeadingLike && restText) {
+      // Split: heading on its own line, rest on next line
+      return `\n\n${boldText.toUpperCase()}\n${restText}\n`;
     }
-    return `\n${cleaned}\n`;
+    if (isHeadingLike && !restText) {
+      return `\n\n${boldText.toUpperCase()}\n`;
+    }
+    return `\n${boldText}${restText ? ' ' + restText : ''}\n`;
   });
 
   // Convert list items to bullet points
@@ -1602,7 +1610,10 @@ function convertDocxHtmlToStructuredText(html: string): string {
     return cleaned ? `\n- ${cleaned}` : '';
   });
 
-  // Convert paragraphs to newlines
+  // Remove list wrappers
+  text = text.replace(/<\/?(?:ul|ol)[^>]*>/gi, '');
+
+  // Convert remaining paragraphs to newlines
   text = text.replace(/<\/p>/gi, '\n');
   text = text.replace(/<p[^>]*>/gi, '\n');
 
@@ -1622,6 +1633,9 @@ function convertDocxHtmlToStructuredText(html: string): string {
     .replace(/&nbsp;/g, ' ')
     .replace(/&#\d+;/g, ' ');
 
+  // Post-process: split lines that contain embedded section headings
+  text = splitEmbeddedSectionHeadings(text);
+
   // Clean up whitespace
   text = text
     .replace(/\r/g, '')
@@ -1633,6 +1647,84 @@ function convertDocxHtmlToStructuredText(html: string): string {
     .trim();
 
   return text;
+}
+
+/**
+ * Known section heading phrases used in resumes.
+ * When these appear mid-line in extracted text, we split them onto their own line.
+ */
+const RESUME_SECTION_HEADINGS = [
+  'Professional Experience',
+  'Work Experience',
+  'Employment History',
+  'Experience',
+  'Profile Summary',
+  'Professional Summary',
+  'Summary',
+  'Key Skill',
+  'Key Skills',
+  'Technical Skills',
+  'Core Skills',
+  'Skills',
+  'Education',
+  'Academic Background',
+  'Certifications',
+  'Certificates',
+  'Projects',
+  'Notable Projects',
+  'Accomplishments',
+  'Achievements',
+  'Languages',
+  'Core Competencies',
+  'Competencies',
+];
+
+/**
+ * Detect known section headings embedded in the middle of lines and split them out.
+ * Also detect "Technologies:" / "Technologies -" lines that should be separate from experience entries.
+ */
+function splitEmbeddedSectionHeadings(text: string): string {
+  const lines = text.split('\n');
+  const output: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      output.push('');
+      continue;
+    }
+
+    let handled = false;
+    for (const heading of RESUME_SECTION_HEADINGS) {
+      // Check if heading appears mid-line (not at position 0)
+      const idx = trimmed.indexOf(heading);
+      if (idx > 0) {
+        // Found heading in the middle of a line — split before it
+        const before = trimmed.substring(0, idx).trim();
+        const after = trimmed.substring(idx).trim();
+        if (before) output.push(before);
+        output.push('');
+        output.push(after.toUpperCase().startsWith(heading.toUpperCase()) ? after : after);
+        handled = true;
+        break;
+      }
+    }
+
+    if (!handled) {
+      // Split "Technologies - HTML, CSS..." or "Technologies: HTML, CSS..." onto their own line
+      // and separate them from the next experience entry
+      const techMatch = trimmed.match(/^(Technologies\s*[-:]\s*.+?)(\s+(?:Senior|Junior|Lead|Associate|Principal|Staff|Chief|Vice|Assistant|Manager|Director|Engineer|Developer|Consultant|Analyst|Architect|Specialist|Executive|Officer|President|Intern|Trainee)\b.+)/i);
+      if (techMatch) {
+        output.push(techMatch[1].trim());
+        output.push('');
+        output.push(techMatch[2].trim());
+      } else {
+        output.push(trimmed);
+      }
+    }
+  }
+
+  return output.join('\n');
 }
 
 function stripHtmlTags(html: string): string {
@@ -1698,11 +1790,136 @@ function normalizeText(text: string) {
 const LEGACY_BULLET_PREFIX_RE = /^\s*(?:[-*•·]+|\d{1,3}[.)]|[a-z][.)])?\s*(impact|achievement|result|highlights?|accomplishment)s?:\s*/i;
 
 function normalizeUploadText(text: string) {
-  return normalizeText(text)
+  const basic = normalizeText(text)
     .split('\n')
     .map((line) => normalizeLegacyBulletPrefix(line))
     .join('\n')
     .trim();
+
+  // Post-process: restructure flat text by splitting on known patterns
+  return restructureResumeText(basic);
+}
+
+/**
+ * Restructure flat/poorly-formatted resume text to ensure section headings
+ * and experience entries are on separate lines.
+ *
+ * Handles common patterns like:
+ *   "Professional Experience Senior Developer - 01/2020 to Present Company Name"
+ *   "Technologies- HTML, CSS Senior Consultant - 10/2021 to 12/2022 Ernst & Young"
+ */
+function restructureResumeText(text: string): string {
+  const SECTION_HEADING_NAMES = [
+    'Professional Experience', 'Work Experience', 'Employment History',
+    'Profile Summary', 'Professional Summary', 'Career Summary', 'Career Objective',
+    'Key Skills', 'Key Skill', 'Technical Skills', 'Core Skills', 'Core Competencies',
+    'Certifications', 'Certification',
+    'Accomplishments', 'Achievements',
+    'Education', 'Academic Background', 'Qualifications',
+    'Projects', 'Notable Projects',
+    'Summary', 'Skills', 'Experience',
+  ];
+
+  const ROLE_KEYWORDS_RE = /(?:Senior|Junior|Lead|Associate|Principal|Staff|Chief|Vice|Assistant|Manager|Director|Engineer|Developer|Consultant|Analyst|Architect|Specialist|Executive|Officer|President|Intern|Trainee|Systems?)\b/;
+
+  let result = text;
+
+  // 1. Ensure "E-mail:", "Mobile:", "Address:" start on new lines
+  result = result.replace(/E-mail:\s*/gi, '\nEmail: ');
+  result = result.replace(/Mobile:\s*/gi, '\nMobile: ');
+  result = result.replace(/Address:\s*/gi, '\nAddress: ');
+  result = result.replace(/Phone:\s*/gi, '\nPhone: ');
+
+  // 2. Process line-by-line to split section headings from content
+  const lines = result.split('\n');
+  const output: string[] = [];
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) { output.push(''); continue; }
+
+    let matched = false;
+
+    // Try to find a section heading at the START or MIDDLE of this line
+    // Sort headings longest-first to match "Professional Experience" before "Experience"
+    const sortedHeadings = [...SECTION_HEADING_NAMES].sort((a, b) => b.length - a.length);
+    for (const heading of sortedHeadings) {
+      const re = new RegExp(`^(.*?)\\b(${escapeRegExp(heading)})\\b(.*)$`, 'i');
+      const match = line.match(re);
+      if (!match) continue;
+
+      const before = match[1].trim();
+      const headingText = match[2];
+      const after = match[3].trim();
+
+      // Don't split if the heading is part of a longer phrase that isn't actually a heading
+      // e.g. "I have experience in..." — heading "Experience" is mid-sentence
+      // But DO split if the before-text is long (> 100 chars = likely concatenated blocks)
+      if (before && /[a-z]$/.test(before) && !/[.!?;:,]$/.test(before) && before.length < 100) continue;
+
+      if (before) output.push(before);
+      output.push('');
+      // Put heading on its own line in uppercase
+      output.push(headingText.toUpperCase());
+      if (after) output.push(after);
+      matched = true;
+      break;
+    }
+
+    if (matched) continue;
+
+    // 3. Split "Technologies[-:] list RoleTitle..." into separate lines
+    const techMatch = line.match(
+      new RegExp(`^(Technologies\\s*[-:]\\s*[^\\n]+?)\\s+(${ROLE_KEYWORDS_RE.source}.+)`, 'i'),
+    );
+    if (techMatch) {
+      output.push(techMatch[1].trim());
+      output.push(techMatch[2].trim());
+      continue;
+    }
+
+    // 4. Split "RoleTitle - MM/YYYY to MM/YYYY CompanyName - first bullet" format
+    const roleDateCompanyMatch = line.match(
+      /^(.+?)\s*-\s*(\d{1,2}\/\d{4}\s+to\s+(?:Current|Present|\d{1,2}\/\d{4}))\s+([A-Z][A-Za-z\s&.,]+?)(?:\s*-\s+(.+))?$/i,
+    );
+    if (roleDateCompanyMatch) {
+      const role = roleDateCompanyMatch[1].trim();
+      const dateRange = roleDateCompanyMatch[2].trim();
+      const company = roleDateCompanyMatch[3].trim();
+      const firstBullet = roleDateCompanyMatch[4]?.trim();
+      output.push(role);
+      output.push(dateRange);
+      output.push(company);
+      if (firstBullet) output.push(`- ${firstBullet}`);
+      continue;
+    }
+
+    // 5. Split "RoleTitle- MM/YYYY - MM/YYYY CompanyName" (dash attached to role, date range with dashes)
+    const roleDateDashMatch = line.match(
+      /^(.+?)-\s*(\d{1,2}\/\d{4})\s*-\s*(\d{1,2}\/\d{4})\s+([A-Z][A-Za-z\s&.,]+?)(?:\s*-\s+(.+))?$/i,
+    );
+    if (roleDateDashMatch) {
+      const role = roleDateDashMatch[1].trim();
+      const dateStr = `${roleDateDashMatch[2]} - ${roleDateDashMatch[3]}`;
+      const company = roleDateDashMatch[4].trim();
+      const firstBullet = roleDateDashMatch[5]?.trim();
+      output.push(role);
+      output.push(dateStr);
+      output.push(company);
+      if (firstBullet) output.push(`- ${firstBullet}`);
+      continue;
+    }
+
+    output.push(line);
+  }
+
+  result = output.join('\n');
+  result = result.replace(/\n{3,}/g, '\n\n').trim();
+  return result;
+}
+
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function normalizeLegacyBulletPrefix(line: string) {
