@@ -253,6 +253,14 @@ function mapExperience(parsed: ParsedResumeText) {
       continue;
     }
 
+    // Skip "Technologies - ..." or "Technologies: ..." lines — treat as highlights, not company/role
+    if (/^Technologies\s*[-:]/i.test(normalizedLine)) {
+      if (current) {
+        current.highlights.push(normalizedLine);
+      }
+      continue;
+    }
+
     const bullet = extractBulletLine(normalizedSourceLine);
     if (bullet) {
       if (pendingRole && currentCompany && !current) {
@@ -499,6 +507,8 @@ function guessTitle(lines: string[], header: HeaderMapping) {
       if (line.length > 96 || /@|https?:\/\/|www\./i.test(line)) return false;
       if (!ROLE_HINT_RE.test(line)) return false;
       if (!/[|/]|(?:\s[-–—]\s)/.test(line)) return false;
+      // Reject lines that contain date ranges (these are experience entries, not titles)
+      if (/\b\d{1,2}[/-]\d{4}\b/.test(line) || /\b(20\d{2}|19\d{2})[-/]\d{1,2}\b/.test(line)) return false;
       return true;
     });
   if (roleCandidate) {
@@ -654,9 +664,7 @@ function sanitizeEducationForStrictSave(items: EducationItem[]) {
     const hasCore = Boolean(institution || degree);
     if (!hasCore) continue;
     const strictValid = (
-      institution.length >= 2 &&
-      degree.length >= 2 &&
-      (startDate.length >= 4 || endDate.length >= 4)
+      (institution.length >= 2 || degree.length >= 2)
     );
     if (!strictValid) {
       rejected.push(buildRejectedLine('Education', [degree, institution, startDate, endDate, ...details]));
@@ -912,6 +920,8 @@ function looksLikeEducationInstitutionLine(line: string) {
 function looksLikeCompany(line: string) {
   const cleaned = cleanLooseText(line);
   if (!cleaned) return false;
+  // "Technologies - HTML, CSS, ..." or "Technologies: ..." is NOT a company
+  if (/^Technologies\s*[-:]/i.test(cleaned)) return false;
   if (looksLikeRole(cleaned) && !/(inc|llc|ltd|corp|company|technologies|systems|labs|solutions|group|studio|partners|bank|university|health|consulting|digital)\b/i.test(cleaned)) {
     return false;
   }
@@ -969,8 +979,15 @@ function sortExperienceChronological(experience: ExperienceItem[]) {
 }
 
 function isDateLine(line: string) {
-  return /(\b(20\d{2}|19\d{2})\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b)/i.test(line)
-    && /-|to|–|—|â€“|â€”/i.test(line);
+  const hasYear = /(\b(20\d{2}|19\d{2})\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b)/i.test(line);
+  if (!hasYear) return false;
+  // Check for date range separator: “ - “, “ to “, em-dash, en-dash, etc.
+  if (/\s+-\s+|\bto\b|–|—|â€”|â€”/i.test(line)) return true;
+  // YYYY-MM - YYYY-MM format (dashes within dates and between dates)
+  if (/\b(20\d{2}|19\d{2})[-/]\d{1,2}\b.*\s+-\s+.*\b(20\d{2}|19\d{2})/i.test(line)) return true;
+  // MM/YYYY - MM/YYYY format
+  if (/\b\d{1,2}[/-](20\d{2}|19\d{2})\b.*\s+-\s+.*\b\d{1,2}[/-](20\d{2}|19\d{2})/i.test(line)) return true;
+  return false;
 }
 
 function isStandaloneDateLine(line: string) {
@@ -987,10 +1004,13 @@ function isCrossSectionBoundary(line: string) {
 function extractDates(line: string) {
   const dateToken = '(?:' +
     '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\s+\\d{4}' +
-    '|\\b(?:19|20)\\d{2}\\b' +
-    '|\\b\\d{1,2}[/-](?:19|20)\\d{2}\\b' +
+    '|\\b(?:19|20)\\d{2}[-/]\\d{1,2}\\b' +     // YYYY-MM or YYYY/MM format
+    '|\\b\\d{1,2}[/-](?:19|20)\\d{2}\\b' +      // MM/YYYY or MM-YYYY format
+    '|\\b(?:19|20)\\d{2}\\b' +                   // bare YYYY (must be last to not consume YYYY-MM)
     ')';
-  const rangePattern = new RegExp(`(${dateToken})\\s*(?:-|to|–|—|â€“|â€”)\\s*((?:present|current|now)|${dateToken})?`, 'i');
+  // Use “ - “ (with spaces) or “to” or em/en-dash as range separator to avoid
+  // matching the “-” inside YYYY-MM tokens
+  const rangePattern = new RegExp(`(${dateToken})\\s*(?:\\s-\\s|\\bto\\b|–|—|â€”|â€”)\\s*((?:present|current|now|till\\s*date)|${dateToken})?`, 'i');
   const match = line.match(rangePattern);
   if (!match) return { start: '', end: '' };
   return {
@@ -1002,17 +1022,18 @@ function extractDates(line: string) {
 function normalizeDateToken(token: string) {
   if (!token) return '';
   const clean = token.replace(/\u2013|\u2014/g, '-').trim();
-  if (/present|current|now/i.test(clean)) return 'Present';
+  if (/present|current|now|till\s*date/i.test(clean)) return 'Present';
   return clean;
 }
 
 function stripDates(line: string) {
   return line
-    .replace(/\b\d{1,2}[/-](19\d{2}|20\d{2})\b/gi, '')
-    .replace(/\b(20\d{2}|19\d{2})\b/g, '')
+    .replace(/\b(19\d{2}|20\d{2})[-/]\d{1,2}\b/gi, '')   // YYYY-MM
+    .replace(/\b\d{1,2}[/-](19\d{2}|20\d{2})\b/gi, '')   // MM/YYYY
+    .replace(/\b(20\d{2}|19\d{2})\b/g, '')                // bare YYYY
     .replace(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b/gi, '')
-    .replace(/\b(present|current|now)\b/gi, '')
-    .replace(/[-–—â€“â€”|@]\s*$/g, '')
+    .replace(/\b(present|current|now|till\s*date)\b/gi, '')
+    .replace(/[-–—â€”â€”|@]\s*$/g, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
@@ -1081,13 +1102,15 @@ function parseDateToken(token: string, end: boolean) {
     const month = monthMap[monthYear[1].slice(0, 4)] || monthMap[monthYear[1].slice(0, 3)] || 1;
     return { year: Number(monthYear[2]), month };
   }
+  // YYYY-MM format (ISO-style, e.g. "2010-01")
+  const yearMonthIso = clean.match(/\b(19\d{2}|20\d{2})[-/](\d{1,2})\b/);
+  if (yearMonthIso) {
+    return { year: Number(yearMonthIso[1]), month: Math.max(1, Math.min(12, Number(yearMonthIso[2]))) };
+  }
+  // MM/YYYY or MM-YYYY format
   const monthYearNumeric = clean.match(/\b(\d{1,2})[-/](19\d{2}|20\d{2})\b/);
   if (monthYearNumeric) {
     return { year: Number(monthYearNumeric[2]), month: Math.max(1, Math.min(12, Number(monthYearNumeric[1]))) };
-  }
-  const yearMonth = clean.match(/\b(19\d{2}|20\d{2})[-/](\d{1,2})\b/);
-  if (yearMonth) {
-    return { year: Number(yearMonth[1]), month: Math.max(1, Math.min(12, Number(yearMonth[2]))) };
   }
   const year = clean.match(/\b(19\d{2}|20\d{2})\b/);
   if (year) {

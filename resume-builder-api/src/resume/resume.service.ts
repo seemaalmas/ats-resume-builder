@@ -1922,7 +1922,11 @@ function normalizeUploadText(text: string) {
     .trim();
 
   // Post-process: restructure flat text by splitting on known patterns
-  return restructureResumeText(basic);
+  const restructured = restructureResumeText(basic);
+
+  // Merge fragmented lines that mammoth splits across multiple lines
+  // (e.g. "Assistant\nVice President -" → "Assistant Vice President -")
+  return mergeFragmentedLines(restructured);
 }
 
 /**
@@ -2073,6 +2077,132 @@ function restructureResumeText(text: string): string {
   result = output.join('\n');
   result = result.replace(/\n{3,}/g, '\n\n').trim();
   return result;
+}
+
+/**
+ * Merge lines that mammoth fragmented across line breaks.
+ *
+ * Handles:
+ * 1. Split role titles: "Assistant\nVice President -" → "Assistant Vice President -"
+ * 2. Split section headings: "Professional\n\nEXPERIENCE" → "PROFESSIONAL EXPERIENCE"
+ * 3. False headings followed by continuation text: "LANGUAGES\nincluding HTML5..." → merged back
+ * 4. "Technologies" lines separated from content
+ */
+function mergeFragmentedLines(text: string): string {
+  const ROLE_KEYWORD_RE = /^(?:Vice\s+President|President|Director|Manager|Engineer|Developer|Consultant|Analyst|Architect|Specialist|Executive|Officer|Coordinator|Administrator|Trainee|Intern)\b/i;
+  const ROLE_PREFIX_RE = /^(?:Senior|Junior|Lead|Associate|Principal|Staff|Chief|Assistant|Systems?|Technical\s+Support\s*\/?\s*)?$/i;
+  const KNOWN_MULTI_WORD_HEADINGS: Record<string, string> = {
+    'professional': 'EXPERIENCE',
+    'work': 'EXPERIENCE',
+    'employment': 'HISTORY',
+    'career': 'HISTORY',
+    'profile': 'SUMMARY',
+    'academic': 'BACKGROUND',
+    'education': 'HISTORY',
+    'technical': 'SKILLS',
+    'core': 'SKILLS',
+    'key': 'SKILL',
+    'notable': 'PROJECTS',
+    'soft': 'SKILLS',
+  };
+  const CONTINUATION_WORDS_RE = /^(?:including|such\s+as|like|and|with|using|for|the|a|an|in|on|at|to|of|by)\b/i;
+
+  const lines = text.split('\n');
+  const merged: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i].trim();
+
+    // Skip empty lines
+    if (!line) {
+      merged.push('');
+      i++;
+      continue;
+    }
+
+    // --- Rule 1: Merge split section headings ---
+    // e.g. "Professional" + "" + "EXPERIENCE" → "PROFESSIONAL EXPERIENCE"
+    const lineLower = line.toLowerCase().replace(/[^a-z]/g, '');
+    if (KNOWN_MULTI_WORD_HEADINGS[lineLower]) {
+      const expectedSuffix = KNOWN_MULTI_WORD_HEADINGS[lineLower];
+      // Look ahead (skip empty lines) for the expected suffix
+      let nextContentIdx = i + 1;
+      while (nextContentIdx < lines.length && !lines[nextContentIdx].trim()) nextContentIdx++;
+      if (nextContentIdx < lines.length) {
+        const nextLine = lines[nextContentIdx].trim();
+        const nextLower = nextLine.toLowerCase().replace(/[^a-z]/g, '');
+        if (nextLower === expectedSuffix.toLowerCase().replace(/[^a-z]/g, '')) {
+          merged.push(`${line.toUpperCase()} ${nextLine.toUpperCase()}`);
+          i = nextContentIdx + 1;
+          continue;
+        }
+      }
+    }
+
+    // --- Rule 2: Merge split role titles ---
+    // Pattern: short line that looks like a role prefix, followed by a line
+    // with a role keyword and optional trailing dash/date
+    // e.g. "Assistant" + "Vice President -" → "Assistant Vice President -"
+    //      "Senior Technology" + "Consultant -" → "Senior Technology Consultant -"
+    //      "Lead UI" + "Developer-" → "Lead UI Developer-"
+    //      "Senior Software" + "Developer -" → "Senior Software Developer -"
+    if (line.length <= 30 && !line.startsWith('-') && ROLE_PREFIX_RE.test(line)) {
+      // Look ahead (skip empty lines)
+      let nextIdx = i + 1;
+      while (nextIdx < lines.length && !lines[nextIdx].trim()) nextIdx++;
+      if (nextIdx < lines.length) {
+        const nextLine = lines[nextIdx].trim();
+        // Check if next line starts with a role keyword (possibly with trailing " -" or "-")
+        const rolePartMatch = nextLine.match(/^((?:Vice\s+President|President|Director|Manager|Engineer|Developer|Consultant|Analyst|Architect|Specialist|Executive|Officer|Coordinator|Administrator|Trainee|Intern)(?:\s*\([^)]*\))?)\s*(-.*)?$/i);
+        if (rolePartMatch) {
+          const mergedRole = `${line} ${nextLine}`;
+          merged.push(mergedRole);
+          i = nextIdx + 1;
+          continue;
+        }
+      }
+    }
+
+    // --- Rule 3: False headings followed by continuation text ---
+    // e.g. "LANGUAGES" followed by "including HTML5, CSS3..." is NOT a real heading
+    // It's mid-sentence: "...numerous programming LANGUAGES including HTML5..."
+    if (/^[A-Z]{4,}$/.test(line) && line.length <= 20) {
+      let nextIdx = i + 1;
+      while (nextIdx < lines.length && !lines[nextIdx].trim()) nextIdx++;
+      if (nextIdx < lines.length) {
+        const nextLine = lines[nextIdx].trim();
+        if (CONTINUATION_WORDS_RE.test(nextLine)) {
+          // Check if previous non-empty line ends without a sentence terminator
+          let prevIdx = merged.length - 1;
+          while (prevIdx >= 0 && !merged[prevIdx].trim()) prevIdx--;
+          if (prevIdx >= 0) {
+            const prevLine = merged[prevIdx].trim();
+            if (prevLine && /[a-z]$/.test(prevLine)) {
+              // Merge: previous line + this "heading" + continuation
+              merged[prevIdx] = `${prevLine} ${line.toLowerCase()} ${nextLine}`;
+              i = nextIdx + 1;
+              continue;
+            }
+          }
+        }
+      }
+    }
+
+    // --- Rule 4: Ensure "Technologies" lines don't eat next role ---
+    // "Technologies- HTML, CSS, JavaScript, ReactJS" should stay as-is
+    // but NOT merge with the next line
+    if (/^Technologies\s*[-:]/i.test(line)) {
+      merged.push(line);
+      i++;
+      continue;
+    }
+
+    merged.push(line);
+    i++;
+  }
+
+  return merged.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 function escapeRegExp(str: string): string {

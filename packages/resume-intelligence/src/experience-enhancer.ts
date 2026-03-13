@@ -27,7 +27,7 @@ const WORK_SECTION_STOP_CANDIDATES = new Set(['skills', 'education', 'projects',
 const WORK_SECTION_LITERAL_STOPS = new Set(['skills', 'education', 'projects', 'certifications', 'languages', 'hobbies', 'summary']);
 const ROLE_HINT_RE = /\b(engineer|developer|manager|architect|consultant|assistant vice president|vice president|avp|director|lead|officer|specialist|principal|administrator|coordinator|analyst|founder|owner|consultant)\b/i;
 const COMPANY_HINT_RE = /\b(inc|llc|ltd|corp|company|technologies|systems|solutions|group|partners|bank|consulting|digital|services|labs|enterprises|pvt|private)\b/i;
-const DATE_RANGE_RE = /(?:\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s*\d{4}|\b\d{1,2}[/-]\d{4}|\b\d{4})(?:\s*(?:-|–|—|to)\s*(?:present|current|now|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s*\d{4}|\d{1,2}[/-]\d{4}|\d{4}))?/i;
+const DATE_RANGE_RE = /(?:\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s*\d{4}|\b(?:19|20)\d{2}[-/]\d{1,2}\b|\b\d{1,2}[/-]\d{4}|\b\d{4})(?:\s*(?:\s-\s|–|—|to)\s*(?:present|current|now|till\s*date|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s*\d{4}|(?:19|20)\d{2}[-/]\d{1,2}|\d{1,2}[/-]\d{4}|\d{4}))?/i;
 const BULLET_PREFIX_RE = /^[\-\u2022\u25E6\u25AA\u25CF\*•]\s*/;
 
 type EnhancerInput = {
