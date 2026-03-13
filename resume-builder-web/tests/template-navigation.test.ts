@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { buildTemplateSelectionRoute } from '../src/lib/resume-flow';
+import { buildTemplateSelectionRoute, resolveCurrentSessionResumeId } from '../src/lib/resume-flow';
 
 const appDir = path.join(__dirname, '..', 'app', 'resume');
 const editorPath = path.join(appDir, 'ResumeEditor.tsx');
@@ -233,5 +233,83 @@ test('template preview frame CSS uses exact page aspect ratio to avoid clipping'
   assert(
     globals.includes('@media (max-width: 900px)') && globals.includes('.template-grid--gallery'),
     'Dashboard gallery should collapse to one column below the tablet breakpoint',
+  );
+});
+
+test('dashboard always renders template grid with sample data fallback', () => {
+  const dashboardContent = readFileSync(dashboardPath, 'utf-8');
+  assert(
+    dashboardContent.includes('sampleResumeData'),
+    'Dashboard should import sample resume data for fallback previews',
+  );
+  assert(
+    dashboardContent.includes('effectivePreviewResume'),
+    'Dashboard should compute an effective preview that falls back to sample data',
+  );
+  assert(
+    dashboardContent.includes('previewResume={effectivePreviewResume}'),
+    'Dashboard template grid should use the effective preview (with sample fallback)',
+  );
+  assert(
+    !dashboardContent.includes('{previewResume || resumesLoading ?'),
+    'Dashboard should not conditionally hide the template grid when no resume is selected',
+  );
+});
+
+test('dashboard navigates to resume/start when clicking template without a selected resume', () => {
+  const dashboardContent = readFileSync(dashboardPath, 'utf-8');
+  assert(
+    dashboardContent.includes('/resume/start?template='),
+    'Dashboard should navigate to resume creation with pre-selected template when no resume is selected',
+  );
+  assert(
+    !dashboardContent.includes("setStatus('Select or create a resume before previewing a template.')"),
+    'Dashboard should not show a dead-end status message when clicking template without resume',
+  );
+  assert(
+    !dashboardContent.includes("setStatus('Select or create a resume before applying a template.')"),
+    'Dashboard should not show a dead-end status message when selecting template without resume',
+  );
+});
+
+test('resolveCurrentSessionResumeId falls back to session storage when no explicit id is given', () => {
+  const storage = {
+    store: {} as Record<string, string>,
+    getItem(key: string) { return this.store[key] || null; },
+    setItem(key: string, value: string) { this.store[key] = value; },
+    removeItem(key: string) { delete this.store[key]; },
+  };
+  storage.setItem('resume-builder.active-resume-id.v1', 'stored-resume-42');
+
+  assert.equal(
+    resolveCurrentSessionResumeId('explicit-id', storage),
+    'explicit-id',
+    'Should return the explicit resume id when provided',
+  );
+  assert.equal(
+    resolveCurrentSessionResumeId('', storage),
+    'stored-resume-42',
+    'Should fall back to session storage when no explicit id is given',
+  );
+  assert.equal(
+    resolveCurrentSessionResumeId(''),
+    '',
+    'Should return empty string when no explicit id and no storage available',
+  );
+});
+
+test('template selection page left cards and right preview use same data source', () => {
+  const templatesContent = readFileSync(templatesPath, 'utf-8');
+  assert(
+    templatesContent.includes('previewResume={previewReady ? previewResume : null}'),
+    'Left cards should receive the same previewResume used by the right preview',
+  );
+  assert(
+    templatesContent.includes('ActiveTemplateComponent resumeData={previewResume}'),
+    'Right preview should render with the same previewResume data',
+  );
+  assert(
+    templatesContent.includes('selectedTemplate={selectedTemplate}'),
+    'Left cards should highlight the currently selected template',
   );
 });

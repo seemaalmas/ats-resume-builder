@@ -415,8 +415,8 @@ export function clearActiveResumeSelection(storage?: StorageLike) {
 
 export function resolveCurrentSessionResumeId(resumeId = '', storage?: StorageLike) {
   const explicitResumeId = String(resumeId || '').trim();
-  void storage;
-  return explicitResumeId;
+  if (explicitResumeId) return explicitResumeId;
+  return readActiveResumeSelection(storage);
 }
 
 export function readPendingUploadSession(storage?: StorageLike): PendingUploadSession | null {
