@@ -144,16 +144,10 @@ function sanitizeExperience(input: unknown, rejectedBlocks: string[], mode: Sani
       continue;
     }
 
-    const companyStrong = company.length >= 2 && looksLikeCompany(company);
-    const hasRoleOrStrongCompany = role.length >= 2 || companyStrong;
-    const isUploadValid = company.length >= 2 && hasRoleOrStrongCompany;
-    const isStrictValid = (
-      company.length >= 2 &&
-      role.length >= 2 &&
-      startDate.length >= 4 &&
-      endDate.length >= 4 &&
-      highlights.length >= 1
-    );
+    // For upload mode: accept any entry with meaningful company or role
+    // For persist mode: require at least company and role
+    const isUploadValid = company.length >= 2 || role.length >= 2;
+    const isStrictValid = company.length >= 2 && role.length >= 2;
 
     const valid = mode === 'persist' ? isStrictValid : isUploadValid;
     if (!valid) {
@@ -195,15 +189,11 @@ function sanitizeEducation(input: unknown, rejectedBlocks: string[]) {
       continue;
     }
 
-    const isStrictValid = (
-      institution.length >= 2 &&
-      degree.length >= 2 &&
-      startDate.length >= 4 &&
-      endDate.length >= 4 &&
-      details.length >= 1
-    );
+    // Accept education entries that have at least institution or degree;
+    // dates and details are optional as many resumes omit them
+    const isValid = institution.length >= 2 || degree.length >= 2;
 
-    if (!isStrictValid) {
+    if (!isValid) {
       rejectedBlocks.push(
         buildRejectedLine('Education', [degree, institution, startDate, endDate, ...details]),
       );

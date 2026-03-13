@@ -175,22 +175,21 @@ function isMeaningfulCertification(item: CertificationItem) {
 }
 
 export function draftFromImport(parsed: ResumeImportResult): { resume: ResumeDraft; unmappedText: string } {
-  const experience = parsed.experience
+  const allExperience = parsed.experience
     .map((item) => ({
       company: item.company.trim(),
       role: item.role.trim(),
       startDate: item.startDate.trim(),
       endDate: item.endDate.trim(),
       highlights: item.highlights.map((line) => line.trim()).filter((line) => hasAlphaNumeric(line)),
-    }))
-    .filter((item) => isUploadMappableExperience(item) || captureImportBlock(item));
+    }));
 
-  const strictExperience = experience.filter(isUploadMappableExperience);
-  const droppedExperience = experience
+  const mappableExperience = allExperience.filter(isUploadMappableExperience);
+  const droppedExperience = allExperience
     .filter((item) => !isUploadMappableExperience(item))
     .map((item) => captureImportBlock(item));
 
-  const education = parsed.education
+  const allEducation = parsed.education
     .map((item) => ({
       institution: item.institution.trim(),
       degree: item.degree.trim(),
@@ -199,11 +198,10 @@ export function draftFromImport(parsed: ResumeImportResult): { resume: ResumeDra
       details: (item.details || []).map((line) => line.trim()).filter(Boolean),
       gpa: typeof item.gpa === 'number' ? item.gpa : null,
       percentage: typeof item.percentage === 'number' ? item.percentage : null,
-    }))
-    .filter((item) => isStrictEducation(item) || captureImportBlock(item));
+    }));
 
-  const strictEducation = education.filter(isStrictEducation);
-  const droppedEducation = education
+  const mappableEducation = allEducation.filter(isStrictEducation);
+  const droppedEducation = allEducation
     .filter((item) => !isStrictEducation(item))
     .map((item) => captureImportBlock(item));
 
@@ -252,8 +250,8 @@ export function draftFromImport(parsed: ResumeImportResult): { resume: ResumeDra
       technicalSkills: skillCategories.technicalSkills,
       softSkills: skillCategories.softSkills,
       languages: skillCategories.languages,
-      experience: strictExperience,
-      education: strictEducation,
+      experience: mappableExperience,
+      education: mappableEducation,
       projects,
       certifications,
       templateId: '',
@@ -275,18 +273,19 @@ export function isStrictExperience(item: ExperienceItem) {
 export function isUploadMappableExperience(item: ExperienceItem) {
   const company = item.company.trim();
   const role = item.role.trim();
-  if (company.length < 2) return false;
-  if (role.length >= 2) return true;
-  return looksLikeCompanyName(company);
+  // Accept any experience item that has meaningful content in company or role
+  if (company.length >= 2 || role.length >= 2) return true;
+  // Also accept if there are highlights even without a clear company/role
+  if (item.highlights.some((h) => h.trim().length > 0)) return true;
+  return false;
 }
 
 export function isStrictEducation(item: EducationItem) {
-  return (
-    item.institution.length >= 2 &&
-    item.degree.length >= 2 &&
-    item.startDate.length >= 4 &&
-    item.endDate.length >= 4
-  );
+  // Accept education items that have at least institution or degree
+  // Dates are optional — many resumes omit education dates
+  const hasInstitution = item.institution.trim().length >= 2;
+  const hasDegree = item.degree.trim().length >= 2;
+  return hasInstitution || hasDegree;
 }
 
 export function captureImportBlock(item: { [key: string]: string | string[] | number | null | undefined }) {
@@ -768,14 +767,17 @@ function hasAlphaNumeric(value: string) {
 }
 
 function looksLikeCompanyName(value: string) {
-  if (!value) return false;
-  if (/(inc|llc|ltd|corp|company|technologies|systems|labs|solutions|group|studio|partners|bank|consulting|digital)\b/i.test(value)) {
+  if (!value || value.trim().length < 2) return false;
+  if (/(inc|llc|ltd|corp|company|technologies|systems|labs|solutions|group|studio|partners|bank|consulting|digital|services|software|infotech|infosys|tech|pvt|private|limited)\b/i.test(value)) {
     return true;
   }
   const tokens = value.split(/\s+/).filter(Boolean);
-  if (tokens.length < 2 || tokens.length > 7) return false;
-  const titleCaseTokens = tokens.filter((token) => /^[A-Z][A-Za-z0-9&'.-]*$/.test(token)).length;
-  return titleCaseTokens >= Math.ceil(tokens.length * 0.6);
+  // Accept any multi-word name or single capitalized word as a company name
+  if (tokens.length >= 1 && tokens.length <= 10) {
+    // At least one word starts with uppercase
+    if (tokens.some((token) => /^[A-Z]/.test(token))) return true;
+  }
+  return false;
 }
 
 function parseDateToken(token: string, end: boolean) {
