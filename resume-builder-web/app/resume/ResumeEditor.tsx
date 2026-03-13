@@ -1341,7 +1341,7 @@ export default function ResumeEditor() {
               {editorUploadLabel}
               <input
                 type="file"
-                accept=".pdf,.docx,.txt"
+                accept=".pdf,.docx,.doc,.txt,.html,.htm,.rtf"
                 onChange={(e) => onUpload(e.target.files?.[0])}
                 disabled={loadingUpload}
                 style={{ display: 'none' }}

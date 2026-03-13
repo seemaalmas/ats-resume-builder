@@ -1524,8 +1524,19 @@ async function extractTextFromFile(file: { originalname: string; mimetype: strin
   if (file.mimetype === 'text/plain' || ext === 'txt') {
     return file.buffer.toString('utf8');
   }
+  if (file.mimetype === 'text/html' || ext === 'html' || ext === 'htm') {
+    return extractHtmlText(file.buffer);
+  }
+  if (file.mimetype === 'application/rtf' || file.mimetype === 'text/rtf' || ext === 'rtf') {
+    return extractRtfText(file.buffer);
+  }
+  if (file.mimetype === 'application/msword' || ext === 'doc') {
+    throw new BadRequestException({
+      errors: ['Legacy .doc format is not supported. Please save the file as .docx or .pdf and re-upload.'],
+    });
+  }
   throw new BadRequestException({
-    errors: [`unsupported mimetype: ${file.mimetype || 'unknown'}; allowed types are PDF, DOCX, TXT.`],
+    errors: [`unsupported mimetype: ${file.mimetype || 'unknown'}; allowed types are PDF, DOCX, TXT, HTML, RTF.`],
   });
 }
 
@@ -1545,13 +1556,132 @@ async function extractPdfText(buffer: Buffer) {
 
 async function extractDocxText(buffer: Buffer) {
   try {
-    const parsed = await mammoth.extractRawText({ buffer });
-    return parsed.value || '';
+    // Use convertToHtml to preserve heading structure, then convert to plain text
+    // mammoth.extractRawText() loses all formatting which breaks section detection
+    const htmlResult = await mammoth.convertToHtml({ buffer });
+    const html = htmlResult.value || '';
+    if (!html.trim()) {
+      // Fallback to raw text if HTML conversion returns empty
+      const rawResult = await mammoth.extractRawText({ buffer });
+      return rawResult.value || '';
+    }
+    return convertDocxHtmlToStructuredText(html);
   } catch {
     throw new BadRequestException({
       errors: ['Unable to extract readable text from DOCX.'],
     });
   }
+}
+
+/**
+ * Convert mammoth HTML output to structured plain text that preserves
+ * heading markers (uppercase) and list structure (bullet prefixes).
+ */
+function convertDocxHtmlToStructuredText(html: string): string {
+  let text = html;
+
+  // Convert headings to UPPERCASE lines (preserves section detection)
+  text = text.replace(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi, (_m, inner) => {
+    const cleaned = stripHtmlTags(inner).trim();
+    return cleaned ? `\n\n${cleaned.toUpperCase()}\n` : '';
+  });
+
+  // Convert bold/strong standalone paragraphs to uppercase (often section headings in DOCX)
+  text = text.replace(/<p[^>]*>\s*<(?:strong|b)>([\s\S]*?)<\/(?:strong|b)>\s*<\/p>/gi, (_m, inner) => {
+    const cleaned = stripHtmlTags(inner).trim();
+    // Only uppercase short text that looks like a heading (no sentence punctuation)
+    if (cleaned && cleaned.length <= 64 && !/[.,;!?]/.test(cleaned)) {
+      return `\n\n${cleaned.toUpperCase()}\n`;
+    }
+    return `\n${cleaned}\n`;
+  });
+
+  // Convert list items to bullet points
+  text = text.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_m, inner) => {
+    const cleaned = stripHtmlTags(inner).trim();
+    return cleaned ? `\n- ${cleaned}` : '';
+  });
+
+  // Convert paragraphs to newlines
+  text = text.replace(/<\/p>/gi, '\n');
+  text = text.replace(/<p[^>]*>/gi, '\n');
+
+  // Convert <br> to newlines
+  text = text.replace(/<br\s*\/?>/gi, '\n');
+
+  // Remove remaining HTML tags
+  text = stripHtmlTags(text);
+
+  // Decode common HTML entities
+  text = text
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#\d+;/g, ' ');
+
+  // Clean up whitespace
+  text = text
+    .replace(/\r/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .split('\n')
+    .map((line) => line.trim())
+    .join('\n')
+    .trim();
+
+  return text;
+}
+
+function stripHtmlTags(html: string): string {
+  return html.replace(/<[^>]*>/g, '');
+}
+
+function extractHtmlText(buffer: Buffer): string {
+  const html = buffer.toString('utf8');
+  return convertDocxHtmlToStructuredText(html);
+}
+
+function extractRtfText(buffer: Buffer): string {
+  const rtf = buffer.toString('utf8');
+  let text = rtf;
+
+  // Remove RTF header/footer
+  text = text.replace(/^\{\\rtf[^}]*\}?/, '');
+
+  // Remove RTF control words but keep text content
+  // Handle unicode escapes: \u12345? -> character
+  text = text.replace(/\\u(\d+)\??/g, (_m, code) => {
+    try { return String.fromCharCode(parseInt(code, 10)); } catch { return ''; }
+  });
+
+  // Remove font tables, color tables, style sheets
+  text = text.replace(/\{\\(?:fonttbl|colortbl|stylesheet|info|header|footer|pict)[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g, '');
+
+  // Convert RTF paragraph marks to newlines
+  text = text.replace(/\\par\b/g, '\n');
+  text = text.replace(/\\line\b/g, '\n');
+  text = text.replace(/\\tab\b/g, ' ');
+
+  // Remove remaining RTF control words (e.g., \b, \i, \fs24)
+  text = text.replace(/\\[a-z]+\d*\s?/gi, '');
+
+  // Remove curly braces
+  text = text.replace(/[{}]/g, '');
+
+  // Clean up whitespace
+  text = text
+    .replace(/\r/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .split('\n')
+    .map((line) => line.trim())
+    .join('\n')
+    .trim();
+
+  return text;
 }
 
 function normalizeText(text: string) {

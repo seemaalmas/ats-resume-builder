@@ -21,7 +21,11 @@ const MAX_UPLOAD_BYTES = 6 * 1024 * 1024;
 const SUPPORTED_UPLOAD_MIME_TYPES = new Set([
   'application/pdf',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/msword',
   'text/plain',
+  'text/html',
+  'application/rtf',
+  'text/rtf',
 ]);
 
 const optionalTrimmedString = () =>
@@ -168,12 +172,13 @@ export class ResumeController {
       fileFilter: (req: Request & { fileValidationError?: string }, file: UploadedResumeFile, cb: (error: Error | null, acceptFile: boolean) => void) => {
         const ext = extensionFromName(file.originalname);
         const mime = String(file.mimetype || '').toLowerCase();
-        const isSupported = SUPPORTED_UPLOAD_MIME_TYPES.has(mime) || ext === 'pdf' || ext === 'docx' || ext === 'txt';
+        const SUPPORTED_EXTENSIONS = new Set(['pdf', 'docx', 'doc', 'txt', 'html', 'htm', 'rtf']);
+        const isSupported = SUPPORTED_UPLOAD_MIME_TYPES.has(mime) || SUPPORTED_EXTENSIONS.has(ext);
         if (isSupported) {
           cb(null, true);
           return;
         }
-        req.fileValidationError = `unsupported mimetype: ${file.mimetype || 'unknown'}; allowed types are PDF, DOCX, TXT.`;
+        req.fileValidationError = `unsupported mimetype: ${file.mimetype || 'unknown'}; allowed types are PDF, DOCX, DOC, TXT, HTML, RTF.`;
         cb(null, false);
       },
     }),

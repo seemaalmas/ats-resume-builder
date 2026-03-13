@@ -57,6 +57,42 @@ export function normalizeHeading(line: string): CanonicalSection | '' {
   return /:\s*$/.test(line) ? 'unmapped' : '';
 }
 
+const KNOWN_HEADING_PHRASES = new Set([
+  'professional summary',
+  'work experience',
+  'technical skills',
+  'soft skills',
+  'education',
+  'achievements',
+  'languages',
+  'summary',
+  'skills',
+  'experience',
+  'projects',
+  'certifications',
+  'certificates',
+  'employment',
+  'employment history',
+  'career history',
+  'career summary',
+  'profile',
+  'about',
+  'about me',
+  'objective',
+  'core competencies',
+  'competencies',
+  'technologies',
+  'academics',
+  'academic background',
+  'notable projects',
+  'research',
+  'work history',
+  'core skills',
+  'key skills',
+  'licenses',
+  'education history',
+]);
+
 function isHeadingLike(rawLine: string, normalized: string) {
   const raw = String(rawLine || '').trim();
   if (!raw || raw.length > 64) return false;
@@ -64,6 +100,10 @@ function isHeadingLike(rawLine: string, normalized: string) {
   if (/[.,;!?]/.test(raw) && !/:\s*$/.test(raw)) return false;
   if (/\d{2,}/.test(raw) && !/--\s*\d+\s*of\s*\d+\s*--/.test(raw)) return false;
   if (/:\s*$/.test(raw)) return true;
+
+  // Check known heading phrases BEFORE rejecting lowercase-only lines
+  if (KNOWN_HEADING_PHRASES.has(normalized)) return true;
+
   if (/^[a-z\s]+$/.test(raw)) return false;
 
   const words = raw.split(/\s+/).filter(Boolean);
@@ -71,13 +111,5 @@ function isHeadingLike(rawLine: string, normalized: string) {
   const headingWords = words.filter((word) => /^[A-Z][A-Za-z0-9&'()./-]*$/.test(word) || /^[A-Z]{2,}$/.test(word));
   if (headingWords.length >= Math.ceil(words.length * 0.6)) return true;
 
-  return [
-    'professional summary',
-    'work experience',
-    'technical skills',
-    'soft skills',
-    'education',
-    'achievements',
-    'languages',
-  ].includes(normalized);
+  return false;
 }

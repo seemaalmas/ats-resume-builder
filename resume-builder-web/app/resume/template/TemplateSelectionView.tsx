@@ -315,7 +315,7 @@ export default function TemplateSelectionView({
             {uploading ? `Uploading ${pendingUploadFileName || 'resume'}...` : 'Upload / Replace Resume'}
             <input
               type="file"
-              accept=".pdf,.docx,.txt"
+              accept=".pdf,.docx,.doc,.txt,.html,.htm,.rtf"
               style={{ display: 'none' }}
               disabled={uploading || loading || !resumeId}
               data-testid="template-upload-input"
