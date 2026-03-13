@@ -602,6 +602,14 @@ body.resume-embed-body .main-shell {
   z-index: 0;
 }
 
+.template-preview-frame__page--thumbnail {
+  will-change: auto;
+  backface-visibility: visible;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
 .template-preview-frame__content {
   width: 100%;
   height: 100%;

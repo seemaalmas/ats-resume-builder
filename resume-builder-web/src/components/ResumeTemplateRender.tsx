@@ -23,9 +23,6 @@ function toPreviewData(resume: Resume): ResumeImportResult {
   return buildResumePreview(draft);
 }
 
-const THUMBNAIL_PAGE_WIDTH = 560;
-const THUMBNAIL_PAGE_HEIGHT = TEMPLATE_PAGE_HEIGHT * (THUMBNAIL_PAGE_WIDTH / TEMPLATE_PAGE_WIDTH);
-
 export default function ResumeTemplateRender({
   templateId,
   resumeData = null,
@@ -66,8 +63,8 @@ export default function ResumeTemplateRender({
   const resumeLabel = String(resolvedResume.title || resolvedResume.contact?.fullName || '').trim();
   const resumeSource = resumeData ? 'prop' : 'api';
   const previewFrameMode = mode === 'thumbnail' ? 'thumbnail' : 'full';
-  const pageWidth = mode === 'thumbnail' ? THUMBNAIL_PAGE_WIDTH : TEMPLATE_PAGE_WIDTH;
-  const pageHeight = mode === 'thumbnail' ? THUMBNAIL_PAGE_HEIGHT : TEMPLATE_PAGE_HEIGHT;
+  const pageWidth = TEMPLATE_PAGE_WIDTH;
+  const pageHeight = TEMPLATE_PAGE_HEIGHT;
 
   return (
     <div

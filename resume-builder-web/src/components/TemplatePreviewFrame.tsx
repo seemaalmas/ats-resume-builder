@@ -52,8 +52,8 @@ export function TemplatePreviewFrame({
   return (
     <div className="template-preview-frame__container" data-preview-frame-mode={mode} ref={containerRef}>
       <div
-        className="template-preview-frame__page"
-        style={{ transform: `scale(${scale}) translateZ(0)`, width: pageWidth, height: pageHeight }}
+        className={`template-preview-frame__page${mode === 'thumbnail' ? ' template-preview-frame__page--thumbnail' : ''}`}
+        style={{ transform: `scale(${scale})${mode === 'full' ? ' translateZ(0)' : ''}`, width: pageWidth, height: pageHeight }}
       >
         <div className="template-preview-frame__content">{children}</div>
       </div>

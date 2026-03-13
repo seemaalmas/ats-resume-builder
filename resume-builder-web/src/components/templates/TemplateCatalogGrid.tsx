@@ -110,21 +110,28 @@ export default function TemplateCatalogGrid({
             key={template.id}
             className={`template-card ${isApplied ? 'active' : ''}`}
             data-template-id={template.id}
+            onClick={() => {
+              if (disabled) return;
+              previewHandler(template.id);
+            }}
+            onKeyDown={(event) => {
+              if (disabled) return;
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                previewHandler(template.id);
+              }
+            }}
+            role="button"
+            tabIndex={disabled ? -1 : 0}
             onMouseEnter={() => onHoverTemplate?.(template.id)}
             onMouseLeave={() => onHoverTemplate?.('')}
           >
             <div
               className="template-card__preview template-card__preview--interactive"
-              onClick={handlePreview}
-              onKeyDown={(event) => {
-                if (disabled) return;
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault();
-                  handlePreview();
-                }
+              onClick={(event) => {
+                event.stopPropagation();
+                handlePreview();
               }}
-              role="button"
-              tabIndex={disabled ? -1 : 0}
             >
               <TemplateCardThumbnail templateId={template.id} previewResume={previewResume} previewLoading={previewLoading} />
               <button
