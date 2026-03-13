@@ -761,6 +761,47 @@ body.resume-embed-body .main-shell {
   background: #fff0f0;
 }
 
+.guidance-item--clickable {
+  cursor: pointer;
+  transition: box-shadow 0.15s ease;
+}
+
+.guidance-item--clickable:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.guidance-item__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.guidance-item__section-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: #f0ebe4;
+  color: #6b5a47;
+  white-space: nowrap;
+}
+
+.guidance-item.warn .guidance-item__section-badge {
+  background: #f5e4bc;
+  color: #7a5f1e;
+}
+
+.guidance-item.error .guidance-item__section-badge {
+  background: #f5c4c4;
+  color: #8b2e2e;
+}
+
+.guidance-item.good .guidance-item__section-badge {
+  background: #d0edda;
+  color: #2d6b3f;
+}
+
 .completion-header {
   display: flex;
   justify-content: space-between;
