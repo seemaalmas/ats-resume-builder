@@ -32,6 +32,22 @@ export function fullNameOrTitle(resumeData: ResumeImportResult) {
   return title || fullName || 'Resume';
 }
 
+export function allSkills(resumeData: ResumeImportResult) {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const item of [
+    ...cleanList(resumeData.skills),
+    ...cleanList(resumeData.technicalSkills),
+    ...cleanList(resumeData.softSkills),
+  ]) {
+    const key = item.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(item);
+  }
+  return merged;
+}
+
 export function contactLine(resumeData: ResumeImportResult) {
   const parts = [
     resumeData.contact?.email,

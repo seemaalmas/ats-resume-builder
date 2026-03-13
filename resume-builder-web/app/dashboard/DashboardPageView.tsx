@@ -13,6 +13,7 @@ import {
   persistActiveResumeSelection,
   resumeFromApi,
 } from '@/src/lib/resume-flow';
+import { sampleResumeData } from '@/src/lib/sample-resume-data';
 import { recommendTemplates } from '@/src/lib/template-recommendation';
 import { defaultTemplateId, resolveTemplateId, templateRegistry, type TemplateId } from '@/shared/templateRegistry';
 
@@ -165,6 +166,7 @@ export default function DashboardPageView({
 
   const previewDraft = useMemo(() => (activeResume ? resumeFromApi(activeResume) : null), [activeResume]);
   const previewResume = useMemo(() => (previewDraft ? buildResumePreview(previewDraft) : null), [previewDraft]);
+  const effectivePreviewResume = previewResume || sampleResumeData;
   const recommendation = useMemo(() => (previewDraft ? recommendTemplates(previewDraft) : null), [previewDraft]);
   const profileName = activeResume?.contact?.fullName || 'No resume selected';
   const profileRole = activeResume?.experience?.[0]?.role || '';
@@ -211,7 +213,7 @@ export default function DashboardPageView({
     setError('');
     const currentResumeId = String(selectedResumeId || activeResume?.id || '').trim();
     if (!currentResumeId) {
-      setStatus('Select or create a resume before previewing a template.');
+      router.push(`/resume/start?template=${encodeURIComponent(templateId)}`);
       return;
     }
     router.push(buildTemplateSelectionRoute(currentResumeId, templateId));
@@ -222,7 +224,7 @@ export default function DashboardPageView({
     setStatus('');
     setError('');
     if (!activeResume?.id) {
-      setStatus('Select or create a resume before applying a template.');
+      router.push(`/resume/start?template=${encodeURIComponent(templateId)}`);
       return;
     }
 
@@ -335,25 +337,23 @@ export default function DashboardPageView({
           </p>
         ) : null}
 
-        {previewResume || resumesLoading ? (
-          <div style={{ marginTop: 12 }}>
-            <TemplateCatalogGrid
-              templates={DASHBOARD_TEMPLATE_OPTIONS}
-              previewResume={previewResume}
-              selectedTemplate={selectedTemplate}
-              recommendation={recommendation}
-              hoveredTemplate={hoveredTemplate}
-              onHoverTemplate={(templateId) => setHoveredTemplate(templateId)}
-              onPreviewTemplate={handleTemplatePreview}
-              onSelectTemplate={handleTemplateSelect}
-              primaryActionLabel="Use Template"
-              layoutVariant="gallery"
-              disabled={templateSaving || resumesLoading || !hasSelectedResume}
-              previewLoading={resumesLoading}
-              dataTestId="dashboard-template-grid"
-            />
-          </div>
-        ) : null}
+        <div style={{ marginTop: 12 }}>
+          <TemplateCatalogGrid
+            templates={DASHBOARD_TEMPLATE_OPTIONS}
+            previewResume={effectivePreviewResume}
+            selectedTemplate={selectedTemplate}
+            recommendation={recommendation}
+            hoveredTemplate={hoveredTemplate}
+            onHoverTemplate={(templateId) => setHoveredTemplate(templateId)}
+            onPreviewTemplate={handleTemplatePreview}
+            onSelectTemplate={handleTemplateSelect}
+            primaryActionLabel="Use Template"
+            layoutVariant="gallery"
+            disabled={templateSaving || resumesLoading}
+            previewLoading={resumesLoading}
+            dataTestId="dashboard-template-grid"
+          />
+        </div>
       </section>
 
       {status && (

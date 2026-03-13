@@ -23,9 +23,6 @@ function toPreviewData(resume: Resume): ResumeImportResult {
   return buildResumePreview(draft);
 }
 
-const THUMBNAIL_PAGE_WIDTH = 560;
-const THUMBNAIL_PAGE_HEIGHT = TEMPLATE_PAGE_HEIGHT * (THUMBNAIL_PAGE_WIDTH / TEMPLATE_PAGE_WIDTH);
-
 export default function ResumeTemplateRender({
   templateId,
   resumeData = null,
@@ -65,9 +62,34 @@ export default function ResumeTemplateRender({
     mode === 'thumbnail' ? 'resume-template-render resume-template-render--thumbnail' : 'resume-template-render';
   const resumeLabel = String(resolvedResume.title || resolvedResume.contact?.fullName || '').trim();
   const resumeSource = resumeData ? 'prop' : 'api';
-  const previewFrameMode = mode === 'thumbnail' ? 'thumbnail' : 'full';
-  const pageWidth = mode === 'thumbnail' ? THUMBNAIL_PAGE_WIDTH : TEMPLATE_PAGE_WIDTH;
-  const pageHeight = mode === 'thumbnail' ? THUMBNAIL_PAGE_HEIGHT : TEMPLATE_PAGE_HEIGHT;
+
+  // Thumbnail mode: render the template at the container's natural width.
+  // No scaling — the template uses width:100% so text stays readable (11px).
+  // The parent container's aspect-ratio + overflow:hidden clips to show
+  // the top portion of the resume (header, summary, skills, etc.).
+  if (mode === 'thumbnail') {
+    return (
+      <div
+        className={renderModeClassName}
+        data-renderer="resume-template-render"
+        data-render-component="ResumeTemplateRender"
+        data-render-mode="thumbnail"
+        data-template-id={String(templateId || '').trim()}
+        data-resume-label={resumeLabel}
+        data-resume-source={resumeSource}
+        aria-hidden={true}
+      >
+        <TemplatePreview
+          templateId={templateId}
+          resume={resolvedResume}
+          compact={compact}
+          accentOverride={accentOverride}
+          fontOverride={fontOverride}
+          spacing={spacing}
+        />
+      </div>
+    );
+  }
 
   return (
     <div
@@ -78,9 +100,8 @@ export default function ResumeTemplateRender({
       data-template-id={String(templateId || '').trim()}
       data-resume-label={resumeLabel}
       data-resume-source={resumeSource}
-      aria-hidden={mode === 'thumbnail' ? true : undefined}
     >
-      <TemplatePreviewFrame mode={previewFrameMode} pageWidth={pageWidth} pageHeight={pageHeight}>
+      <TemplatePreviewFrame mode="full" pageWidth={TEMPLATE_PAGE_WIDTH} pageHeight={TEMPLATE_PAGE_HEIGHT}>
         <TemplatePreview
           templateId={templateId}
           resume={resolvedResume}

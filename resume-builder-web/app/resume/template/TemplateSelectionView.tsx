@@ -106,6 +106,13 @@ export default function TemplateSelectionView({
     }
   }, [resumeId]);
 
+  // Track which template the URL requested so the fetch callback can
+  // use the latest value even when the closure was captured earlier.
+  const urlTemplateRef = useRef(requestedTemplate);
+  const hasUrlTemplateRef = useRef(hasTemplateQuery);
+  urlTemplateRef.current = requestedTemplate;
+  hasUrlTemplateRef.current = hasTemplateQuery;
+
   useEffect(() => {
     if (!resumeId) {
       setError('Select a saved resume or upload a new one to preview templates.');
@@ -118,7 +125,10 @@ export default function TemplateSelectionView({
     apiClient.getResume(resumeId)
       .then((data) => {
         if (cancelled) return;
-        const initialTemplate = hasTemplateQuery ? requestedTemplate : resolveTemplateId(data.templateId || '', 'classic');
+        // Always read the latest URL param via ref to avoid stale closures
+        const urlTemplate = hasUrlTemplateRef.current ? urlTemplateRef.current : null;
+        const savedTemplate = resolveTemplateId(data.templateId || '', 'classic');
+        const initialTemplate = urlTemplate || savedTemplate;
         setResumeData(data);
         const draft = { ...resumeFromApi(data), templateId: initialTemplate };
         setResumeDraft(draft);
@@ -135,8 +145,9 @@ export default function TemplateSelectionView({
     return () => {
       cancelled = true;
     };
-  }, [apiClient, hasTemplateQuery, requestedTemplate, resumeId, setResumeStore]);
+  }, [apiClient, resumeId, setResumeStore]);
 
+  // Ensure URL template param always overrides any other state (runs after fetch completes too)
   useEffect(() => {
     if (!hasTemplateQuery) return;
     setSelectedTemplate(requestedTemplate);

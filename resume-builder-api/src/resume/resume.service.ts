@@ -2369,6 +2369,9 @@ function renderOrderedSections(
 ) {
   const summary = escapeHtml(String(resume.summary || '').trim() || 'Add a concise summary aligned to your target role.');
   const skills = templateCleanList(resume.skills);
+  const technicalSkills = templateCleanList(resume.technicalSkills);
+  const softSkills = templateCleanList(resume.softSkills);
+  const mergedSkills = dedupeSkills([...skills, ...technicalSkills, ...softSkills]);
   const languages = templateCleanList(resume.languages);
   const experience = templateExperienceItems(resume);
   const projects = templateProjectItems(resume);
@@ -2382,7 +2385,7 @@ function renderOrderedSections(
     return `<h2${classAttr}>${transformed}</h2>`;
   };
 
-  const skillLine = options.groupedSkillLine || (skills.length ? skills.join(', ') : 'Add role-relevant skills.');
+  const skillLine = options.groupedSkillLine || (mergedSkills.length ? mergedSkills.join(', ') : 'Add role-relevant skills.');
   const sections: string[] = [];
 
   sections.push(`

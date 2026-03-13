@@ -1600,8 +1600,31 @@ export default function ResumeEditor() {
           </div>
           <div className="guidance-grid">
             {guidance.items.map((item, idx) => (
-              <div key={`guidance-${idx}`} className={`guidance-item ${item.level}`}>
-                <strong>{item.title}</strong>
+              <div
+                key={`guidance-${idx}`}
+                className={`guidance-item ${item.level}${item.section ? ' guidance-item--clickable' : ''}`}
+                role={item.section ? 'button' : undefined}
+                tabIndex={item.section ? 0 : undefined}
+                onClick={() => {
+                  if (item.section) {
+                    const el = document.getElementById(`resume-section-${item.section}`);
+                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (item.section && (e.key === 'Enter' || e.key === ' ')) {
+                    e.preventDefault();
+                    const el = document.getElementById(`resume-section-${item.section}`);
+                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }
+                }}
+              >
+                <div className="guidance-item__header">
+                  <strong>{item.title}</strong>
+                  {item.section && (
+                    <span className="guidance-item__section-badge">{SECTION_LABELS[item.section]}</span>
+                  )}
+                </div>
                 <p className="small">{item.message}</p>
               </div>
             ))}
@@ -3673,42 +3696,42 @@ function buildGuidance(input: {
   experienceCount: number;
   roleLevel: 'FRESHER' | 'MID' | 'SENIOR';
 }) {
-  const items: Array<{ level: 'good' | 'warn' | 'error'; title: string; message: string }> = [];
+  const items: Array<{ level: 'good' | 'warn' | 'error'; title: string; message: string; section: SectionType | null }> = [];
   if (input.missingContact) {
-    items.push({ level: 'error', title: 'Contact Info', message: 'Add an email or phone number so recruiters can reach you.' });
+    items.push({ level: 'error', title: 'Contact Info', message: 'Add an email or phone number so recruiters can reach you.', section: 'contact' });
   } else {
-    items.push({ level: 'good', title: 'Contact Info', message: 'Clear contact details detected.' });
+    items.push({ level: 'good', title: 'Contact Info', message: 'Clear contact details detected.', section: 'contact' });
   }
   if (input.summaryCharCount < 40) {
-    items.push({ level: 'warn', title: 'Summary', message: 'Add 2-3 sentences focused on role, scope, and impact.' });
+    items.push({ level: 'warn', title: 'Summary', message: 'Add 2-3 sentences focused on role, scope, and impact.', section: 'summary' });
   } else {
-    items.push({ level: 'good', title: 'Summary', message: 'Summary length is ATS-friendly.' });
+    items.push({ level: 'good', title: 'Summary', message: 'Summary length is ATS-friendly.', section: 'summary' });
   }
   if (input.skillsCount < 3) {
-    items.push({ level: 'error', title: 'Skills', message: 'Add at least 3 role-relevant skills.' });
+    items.push({ level: 'error', title: 'Skills', message: 'Add at least 3 role-relevant skills.', section: 'skills' });
   } else if (input.skillsCount < 6) {
-    items.push({ level: 'warn', title: 'Skills', message: 'Add 6-12 skills aligned to the job description.' });
+    items.push({ level: 'warn', title: 'Skills', message: 'Add 6-12 skills aligned to the job description.', section: 'skills' });
   } else {
-    items.push({ level: 'good', title: 'Skills', message: 'Solid skill coverage for ATS parsing.' });
+    items.push({ level: 'good', title: 'Skills', message: 'Solid skill coverage for ATS parsing.', section: 'skills' });
   }
   if (input.experienceCount < 1) {
-    items.push({ level: 'error', title: 'Experience', message: 'Add at least one experience entry.' });
+    items.push({ level: 'error', title: 'Experience', message: 'Add at least one experience entry.', section: 'experience' });
   } else if (!input.hasExperienceMetrics) {
-    items.push({ level: 'warn', title: 'Impact', message: 'Add metrics to at least one bullet (%, $, time).' });
+    items.push({ level: 'warn', title: 'Impact', message: 'Add metrics to at least one bullet (%, $, time).', section: 'experience' });
   } else {
-    items.push({ level: 'good', title: 'Impact', message: 'Metrics detected in experience bullets.' });
+    items.push({ level: 'good', title: 'Impact', message: 'Metrics detected in experience bullets.', section: 'experience' });
   }
   if (input.longBulletCount > 0) {
-    items.push({ level: 'warn', title: 'Bullet Length', message: 'Trim long bullets to 8-22 words for readability.' });
+    items.push({ level: 'warn', title: 'Bullet Length', message: 'Trim long bullets to 8-22 words for readability.', section: 'experience' });
   } else {
-    items.push({ level: 'good', title: 'Bullet Length', message: 'Bullet length is ATS-friendly.' });
+    items.push({ level: 'good', title: 'Bullet Length', message: 'Bullet length is ATS-friendly.', section: 'experience' });
   }
 
   if (input.roleLevel === 'FRESHER') {
-    items.push({ level: 'warn', title: 'Entry Tip', message: 'Projects and coursework can strengthen early-career resumes.' });
+    items.push({ level: 'warn', title: 'Entry Tip', message: 'Projects and coursework can strengthen early-career resumes.', section: 'projects' });
   }
   if (input.roleLevel === 'SENIOR') {
-    items.push({ level: 'warn', title: 'Leadership Tip', message: 'Highlight scope, team size, and cross-functional impact.' });
+    items.push({ level: 'warn', title: 'Leadership Tip', message: 'Highlight scope, team size, and cross-functional impact.', section: 'experience' });
   }
 
   const errorCount = items.filter((i) => i.level === 'error').length;
