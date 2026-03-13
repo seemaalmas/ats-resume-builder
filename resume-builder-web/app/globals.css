@@ -603,11 +603,19 @@ body.resume-embed-body .main-shell {
 }
 
 .template-preview-frame__page--thumbnail {
+  position: static;
   will-change: auto;
   backface-visibility: visible;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+}
+
+.template-preview-frame__container--thumbnail {
+  overflow: hidden;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
 }
 
 .template-preview-frame__content {

@@ -26,7 +26,7 @@ export function TemplatePreviewFrame({
   mode = 'full',
 }: TemplatePreviewFrameProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [scale, setScale] = useState(1);
+  const [scale, setScale] = useState(mode === 'thumbnail' ? 0.5 : 1);
 
   const updateScale = useCallback(() => {
     const container = containerRef.current;
@@ -49,11 +49,24 @@ export function TemplatePreviewFrame({
     };
   }, [updateScale]);
 
+  if (mode === 'thumbnail') {
+    return (
+      <div className="template-preview-frame__container template-preview-frame__container--thumbnail" data-preview-frame-mode="thumbnail" ref={containerRef}>
+        <div
+          className="template-preview-frame__page template-preview-frame__page--thumbnail"
+          style={{ zoom: scale, width: pageWidth, height: pageHeight }}
+        >
+          <div className="template-preview-frame__content">{children}</div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="template-preview-frame__container" data-preview-frame-mode={mode} ref={containerRef}>
       <div
-        className={`template-preview-frame__page${mode === 'thumbnail' ? ' template-preview-frame__page--thumbnail' : ''}`}
-        style={{ transform: `scale(${scale})${mode === 'full' ? ' translateZ(0)' : ''}`, width: pageWidth, height: pageHeight }}
+        className="template-preview-frame__page"
+        style={{ transform: `scale(${scale}) translateZ(0)`, width: pageWidth, height: pageHeight }}
       >
         <div className="template-preview-frame__content">{children}</div>
       </div>
