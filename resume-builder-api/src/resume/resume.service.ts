@@ -505,6 +505,104 @@ export class ResumeService {
     };
   }
 
+  async recomputeResume(userId: string, id: string) {
+    const resume = await this.getRaw(userId, id);
+    const resumeData = resume as any;
+
+    // Build a text representation from stored resume data for re-parsing
+    const textParts: string[] = [];
+    if (resumeData.contact?.fullName) textParts.push(resumeData.contact.fullName);
+    if (resumeData.contact?.email) textParts.push(`Email: ${resumeData.contact.email}`);
+    if (resumeData.contact?.phone) textParts.push(`Phone: ${resumeData.contact.phone}`);
+    if (resumeData.contact?.location) textParts.push(`Location: ${resumeData.contact.location}`);
+    if (resumeData.summary) {
+      textParts.push('', 'PROFESSIONAL SUMMARY', resumeData.summary);
+    }
+    if (Array.isArray(resumeData.skills) && resumeData.skills.length) {
+      textParts.push('', 'SKILLS', resumeData.skills.join(', '));
+    }
+    if (Array.isArray(resumeData.experience) && resumeData.experience.length) {
+      textParts.push('', 'PROFESSIONAL EXPERIENCE');
+      for (const exp of resumeData.experience) {
+        if (exp.role) textParts.push(exp.role);
+        if (exp.company) textParts.push(exp.company);
+        if (exp.startDate || exp.endDate) textParts.push(`${exp.startDate || ''} - ${exp.endDate || ''}`);
+        if (Array.isArray(exp.highlights)) {
+          for (const h of exp.highlights) textParts.push(`- ${h}`);
+        }
+      }
+    }
+    if (Array.isArray(resumeData.education) && resumeData.education.length) {
+      textParts.push('', 'EDUCATION');
+      for (const edu of resumeData.education) {
+        if (edu.degree) textParts.push(edu.degree);
+        if (edu.institution) textParts.push(edu.institution);
+        if (edu.startDate || edu.endDate) textParts.push(`${edu.startDate || ''} - ${edu.endDate || ''}`);
+      }
+    }
+    if (Array.isArray(resumeData.projects) && resumeData.projects.length) {
+      textParts.push('', 'PROJECTS');
+      for (const proj of resumeData.projects) {
+        if (proj.name) textParts.push(proj.name);
+        if (Array.isArray(proj.highlights)) {
+          for (const h of proj.highlights) textParts.push(`- ${h}`);
+        }
+      }
+    }
+    if (Array.isArray(resumeData.certifications) && resumeData.certifications.length) {
+      textParts.push('', 'CERTIFICATIONS');
+      for (const cert of resumeData.certifications) {
+        if (cert.name) textParts.push(cert.name);
+      }
+    }
+
+    const fullText = textParts.join('\n');
+    const normalized = normalizeUploadText(fullText);
+    const parsed = parseResumeText(normalized);
+    const dateMatches = collectDateMatches(normalized);
+    const mapped = mapParsedResume(parsed);
+    const sanitized = sanitizeImportedResume({
+      title: mapped.title || resume.title,
+      contact: mapped.contact,
+      summary: mapped.summary,
+      skills: mapped.skills,
+      experience: mapped.experience,
+      education: mapped.education,
+      projects: mapped.projects,
+      certifications: mapped.certifications,
+      unmappedText: mapped.unmappedText,
+    }, { mode: 'upload' });
+    const finalizedExperience = finalizeExperience({
+      experience: sanitized.experience,
+      parsed,
+      fullText: normalized,
+      dateMatches,
+    });
+    sanitized.experience = finalizedExperience;
+
+    return {
+      resumeId: id,
+      text: normalized,
+      parsed: {
+        title: sanitized.title,
+        contact: sanitized.contact,
+        summary: sanitized.summary,
+        skills: sanitized.skills,
+        experience: sanitized.experience,
+        education: sanitized.education,
+        projects: sanitized.projects,
+        certifications: sanitized.certifications,
+        roleLevel: mapped.roleLevel,
+        signals: mapped.signals,
+        unmappedText: sanitized.unmappedText,
+      },
+      debug: {
+        sectionHits: summarizeSectionHits(parsed.sections),
+        dateMatches,
+      },
+    };
+  }
+
   async parseResumeUpload(
     file: { originalname: string; mimetype: string; size?: number; buffer: Buffer },
     options?: { resumeId?: string; title?: string; mode?: 'extract-only' | 'extract-and-map' },
@@ -1586,22 +1684,53 @@ function convertDocxHtmlToStructuredText(html: string): string {
     return cleaned ? `\n\n${cleaned.toUpperCase()}\n` : '';
   });
 
-  // Handle bold text at START of paragraphs — split into heading + content
-  // e.g. <p><strong>Professional Experience</strong> Assistant Vice President...</p>
-  text = text.replace(/<p[^>]*>\s*<(?:strong|b)>([\s\S]*?)<\/(?:strong|b)>([\s\S]*?)<\/p>/gi, (_m, boldInner, rest) => {
-    const boldText = stripHtmlTags(boldInner).trim();
-    const restText = stripHtmlTags(rest).trim();
-    if (!boldText) return restText ? `\n${restText}\n` : '';
-    // If bold text looks like a heading (short, no sentence punctuation)
-    const isHeadingLike = boldText.length <= 64 && !/[.,;!?]/.test(boldText);
+  // Handle paragraphs that contain bold text — extract bold segments as potential headings
+  // Covers: <p><strong>Heading</strong> rest</p>, <p><b>Heading</b></p>,
+  //         <p><strong><em>Heading</em></strong></p>, multiple bold segments, etc.
+  text = text.replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, (_m, inner) => {
+    const innerTrimmed = inner.trim();
+    if (!innerTrimmed) return '\n';
+
+    // Extract all bold segments from this paragraph
+    const boldSegments: string[] = [];
+    const boldRe = /<(?:strong|b)(?:\s[^>]*)?>([\s\S]*?)<\/(?:strong|b)>/gi;
+    let boldMatch: RegExpExecArray | null;
+    while ((boldMatch = boldRe.exec(innerTrimmed)) !== null) {
+      const boldText = stripHtmlTags(boldMatch[1]).trim();
+      if (boldText) boldSegments.push(boldText);
+    }
+
+    // Get the full plain text of the paragraph
+    const fullText = stripHtmlTags(innerTrimmed).trim();
+    if (!fullText) return '\n';
+
+    // If no bold text, just output as regular paragraph
+    if (!boldSegments.length) {
+      return `\n${fullText}\n`;
+    }
+
+    // Check if the bold segments look like headings
+    const boldCombined = boldSegments.join(' ').trim();
+    const isHeadingLike = boldCombined.length <= 80 && !/[.,;!?]/.test(boldCombined);
+    const restText = fullText.replace(boldCombined, '').trim();
+
+    // If the entire paragraph is bold, treat as heading
+    if (!restText && isHeadingLike) {
+      return `\n\n${boldCombined.toUpperCase()}\n`;
+    }
+
+    // If bold text at start looks like heading + non-bold content follows
+    if (isHeadingLike && fullText.startsWith(boldCombined) && restText) {
+      return `\n\n${boldCombined.toUpperCase()}\n${restText}\n`;
+    }
+
+    // If bold text is a section heading or role-like, split it out
     if (isHeadingLike && restText) {
-      // Split: heading on its own line, rest on next line
-      return `\n\n${boldText.toUpperCase()}\n${restText}\n`;
+      return `\n\n${boldCombined.toUpperCase()}\n${restText}\n`;
     }
-    if (isHeadingLike && !restText) {
-      return `\n\n${boldText.toUpperCase()}\n`;
-    }
-    return `\n${boldText}${restText ? ' ' + restText : ''}\n`;
+
+    // Default: keep as a regular paragraph
+    return `\n${fullText}\n`;
   });
 
   // Convert list items to bullet points
@@ -1612,10 +1741,6 @@ function convertDocxHtmlToStructuredText(html: string): string {
 
   // Remove list wrappers
   text = text.replace(/<\/?(?:ul|ol)[^>]*>/gi, '');
-
-  // Convert remaining paragraphs to newlines
-  text = text.replace(/<\/p>/gi, '\n');
-  text = text.replace(/<p[^>]*>/gi, '\n');
 
   // Convert <br> to newlines
   text = text.replace(/<br\s*\/?>/gi, '\n');
@@ -1783,7 +1908,7 @@ function normalizeText(text: string) {
     .replace(/[•◦▪●]/g, '- ')
     .replace(/\r/g, '')
     .replace(/\n{3,}/g, '\n\n')
-    .replace(/\s{2,}/g, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
     .trim();
 }
 
@@ -1813,22 +1938,32 @@ function restructureResumeText(text: string): string {
     'Professional Experience', 'Work Experience', 'Employment History',
     'Profile Summary', 'Professional Summary', 'Career Summary', 'Career Objective',
     'Key Skills', 'Key Skill', 'Technical Skills', 'Core Skills', 'Core Competencies',
-    'Certifications', 'Certification',
+    'Certifications', 'Certification', 'Certificates',
     'Accomplishments', 'Achievements',
-    'Education', 'Academic Background', 'Qualifications',
+    'Education', 'Academic Background', 'Qualifications', 'Education History',
     'Projects', 'Notable Projects',
+    'Career History', 'Work History',
+    'Languages', 'Soft Skills',
     'Summary', 'Skills', 'Experience',
   ];
 
-  const ROLE_KEYWORDS_RE = /(?:Senior|Junior|Lead|Associate|Principal|Staff|Chief|Vice|Assistant|Manager|Director|Engineer|Developer|Consultant|Analyst|Architect|Specialist|Executive|Officer|President|Intern|Trainee|Systems?)\b/;
+  const ROLE_KEYWORDS_RE = /(?:Senior|Junior|Lead|Associate|Principal|Staff|Chief|Vice|Assistant|Manager|Director|Engineer|Developer|Consultant|Analyst|Architect|Specialist|Executive|Officer|President|Intern|Trainee|Coordinator|Administrator|Head|Founder|Owner|AVP|Systems?)\b/;
+
+  // Date token patterns: "MM/YYYY", "Mon YYYY", "YYYY"
+  const DATE_TOKEN = '(?:\\d{1,2}[/-]\\d{4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\\s+\\d{4}|\\d{4})';
+  const DATE_RANGE_RE = new RegExp(`(${DATE_TOKEN})\\s*(?:-|to|–|—)\\s*((?:Current|Present|Now|Till Date|Till date)|${DATE_TOKEN})`, 'i');
 
   let result = text;
 
-  // 1. Ensure "E-mail:", "Mobile:", "Address:" start on new lines
-  result = result.replace(/E-mail:\s*/gi, '\nEmail: ');
-  result = result.replace(/Mobile:\s*/gi, '\nMobile: ');
-  result = result.replace(/Address:\s*/gi, '\nAddress: ');
-  result = result.replace(/Phone:\s*/gi, '\nPhone: ');
+  // 1. Ensure contact labels start on new lines
+  result = result.replace(/(?<=\S)\s*(E-?mail\s*:)/gi, '\n$1');
+  result = result.replace(/(?<=\S)\s*(Mobile\s*(?:No\.?)?\s*:)/gi, '\n$1');
+  result = result.replace(/(?<=\S)\s*(Phone\s*:)/gi, '\n$1');
+  result = result.replace(/(?<=\S)\s*(Address\s*:)/gi, '\n$1');
+  result = result.replace(/(?<=\S)\s*(LinkedIn\s*:)/gi, '\n$1');
+  result = result.replace(/(?<=\S)\s*(Date of Birth\s*:)/gi, '\n$1');
+  result = result.replace(/(?<=\S)\s*(DOB\s*:)/gi, '\n$1');
+  result = result.replace(/(?<=\S)\s*(Nationality\s*:)/gi, '\n$1');
 
   // 2. Process line-by-line to split section headings from content
   const lines = result.split('\n');
@@ -1878,25 +2013,36 @@ function restructureResumeText(text: string): string {
       continue;
     }
 
-    // 4. Split "RoleTitle - MM/YYYY to MM/YYYY CompanyName - first bullet" format
+    // 4. Split "RoleTitle - DateRange CompanyName - optional bullet" format
+    // Handles: "Senior Developer - 01/2020 to Present Company Name - Led team"
+    //          "Senior Developer - Jan 2020 to Present Company Name"
     const roleDateCompanyMatch = line.match(
-      /^(.+?)\s*-\s*(\d{1,2}\/\d{4}\s+to\s+(?:Current|Present|\d{1,2}\/\d{4}))\s+([A-Z][A-Za-z\s&.,]+?)(?:\s*-\s+(.+))?$/i,
+      new RegExp(`^(.+?)\\s*-\\s*(${DATE_RANGE_RE.source})\\s+([A-Z][A-Za-z\\s&.,()]+?)(?:\\s*-\\s+(.+))?$`, 'i'),
     );
     if (roleDateCompanyMatch) {
       const role = roleDateCompanyMatch[1].trim();
       const dateRange = roleDateCompanyMatch[2].trim();
-      const company = roleDateCompanyMatch[3].trim();
-      const firstBullet = roleDateCompanyMatch[4]?.trim();
-      output.push(role);
-      output.push(dateRange);
-      output.push(company);
-      if (firstBullet) output.push(`- ${firstBullet}`);
+      const company = roleDateCompanyMatch[role.length + dateRange.length > 0 ? 3 : 4]?.trim();
+      const rest = line.substring(line.indexOf(dateRange) + dateRange.length).trim();
+      // Re-parse more carefully
+      const afterDate = rest.replace(/^\s+/, '');
+      const companyBulletMatch = afterDate.match(/^([A-Z][A-Za-z\s&.,()]+?)(?:\s*-\s+(.+))?$/);
+      if (companyBulletMatch) {
+        output.push(role);
+        output.push(dateRange);
+        output.push(companyBulletMatch[1].trim());
+        if (companyBulletMatch[2]) output.push(`- ${companyBulletMatch[2].trim()}`);
+      } else {
+        output.push(role);
+        output.push(dateRange);
+        if (afterDate) output.push(afterDate);
+      }
       continue;
     }
 
     // 5. Split "RoleTitle- MM/YYYY - MM/YYYY CompanyName" (dash attached to role, date range with dashes)
     const roleDateDashMatch = line.match(
-      /^(.+?)-\s*(\d{1,2}\/\d{4})\s*-\s*(\d{1,2}\/\d{4})\s+([A-Z][A-Za-z\s&.,]+?)(?:\s*-\s+(.+))?$/i,
+      /^(.+?)-\s*(\d{1,2}[/-]\d{4})\s*[-–—]\s*(\d{1,2}[/-]\d{4}|Present|Current|Now|Till Date)\s+([A-Z][A-Za-z\s&.,()]+?)(?:\s*-\s+(.+))?$/i,
     );
     if (roleDateDashMatch) {
       const role = roleDateDashMatch[1].trim();
@@ -1907,6 +2053,17 @@ function restructureResumeText(text: string): string {
       output.push(dateStr);
       output.push(company);
       if (firstBullet) output.push(`- ${firstBullet}`);
+      continue;
+    }
+
+    // 6. Split "CompanyName RoleTitle DateRange" or "CompanyName, Location RoleTitle DateRange"
+    const companyRoleDateMatch = line.match(
+      new RegExp(`^([A-Z][A-Za-z\\s&.,()]+?)\\s+(${ROLE_KEYWORDS_RE.source}[^\\d]*?)\\s+(${DATE_RANGE_RE.source})\\s*$`, 'i'),
+    );
+    if (companyRoleDateMatch) {
+      output.push(companyRoleDateMatch[1].trim());
+      output.push(companyRoleDateMatch[2].trim());
+      output.push(companyRoleDateMatch[3].trim());
       continue;
     }
 

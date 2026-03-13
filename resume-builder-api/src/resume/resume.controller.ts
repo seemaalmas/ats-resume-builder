@@ -162,6 +162,15 @@ export class ResumeController {
     res.send(rendered.html);
   }
 
+  @Post(':id/recompute')
+  @HttpCode(200)
+  recompute(
+    @Req() req: { user: { userId: string } },
+    @Param('id') id: string,
+  ) {
+    return this.resumeService.recomputeResume(req.user.userId, id);
+  }
+
   @Post('parse-upload')
   @HttpCode(200)
   @UseFilters(MulterUploadExceptionFilter)

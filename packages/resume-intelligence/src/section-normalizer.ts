@@ -8,7 +8,7 @@ export type CanonicalSection =
   | 'unmapped';
 
 const SECTION_SYNONYMS: Record<CanonicalSection, string[]> = {
-  summary: ['summary', 'professional summary', 'profile', 'profile summary', 'about', 'about me', 'objective', 'career summary', 'career objective'],
+  summary: ['summary', 'professional summary', 'profile', 'profile summary', 'about', 'about me', 'objective', 'career summary', 'career objective', 'executive summary', 'personal statement', 'introduction'],
   skills: [
     'skills',
     'technical skills',
@@ -20,6 +20,12 @@ const SECTION_SYNONYMS: Record<CanonicalSection, string[]> = {
     'technologies',
     'soft skills',
     'languages',
+    'tools and technologies',
+    'technical competencies',
+    'areas of expertise',
+    'expertise',
+    'technical proficiencies',
+    'proficiencies',
   ],
   experience: [
     'experience',
@@ -29,10 +35,13 @@ const SECTION_SYNONYMS: Record<CanonicalSection, string[]> = {
     'employment history',
     'professional experience',
     'career history',
+    'professional background',
+    'relevant experience',
+    'industry experience',
   ],
-  education: ['education', 'academics', 'academic background', 'education history', 'qualifications'],
-  projects: ['projects', 'notable projects', 'research', 'achievements', 'accomplishments'],
-  certifications: ['certifications', 'licenses', 'certificates'],
+  education: ['education', 'academics', 'academic background', 'education history', 'qualifications', 'educational qualifications', 'academic qualifications', 'academic details'],
+  projects: ['projects', 'notable projects', 'research', 'achievements', 'accomplishments', 'key projects', 'project experience', 'key achievements'],
+  certifications: ['certifications', 'licenses', 'certificates', 'professional certifications', 'training', 'training and certifications', 'courses'],
   unmapped: [],
 };
 
@@ -63,20 +72,42 @@ const KNOWN_HEADING_PHRASES = new Set([
   'profile summary',
   'career summary',
   'career objective',
+  'executive summary',
+  'personal statement',
+  'introduction',
   'work experience',
   'professional experience',
+  'professional background',
+  'relevant experience',
+  'industry experience',
   'technical skills',
   'soft skills',
+  'tools and technologies',
+  'technical competencies',
+  'areas of expertise',
+  'expertise',
+  'technical proficiencies',
+  'proficiencies',
   'education',
+  'educational qualifications',
+  'academic qualifications',
+  'academic details',
   'achievements',
   'accomplishments',
+  'key achievements',
   'languages',
   'summary',
   'skills',
   'experience',
   'projects',
+  'key projects',
+  'project experience',
   'certifications',
   'certificates',
+  'professional certifications',
+  'training',
+  'training and certifications',
+  'courses',
   'employment',
   'employment history',
   'career history',
@@ -102,7 +133,7 @@ const KNOWN_HEADING_PHRASES = new Set([
 
 function isHeadingLike(rawLine: string, normalized: string) {
   const raw = String(rawLine || '').trim();
-  if (!raw || raw.length > 64) return false;
+  if (!raw || raw.length > 80) return false;
   if (/^[\-*•·]/.test(raw)) return false;
   if (/[.,;!?]/.test(raw) && !/:\s*$/.test(raw)) return false;
   if (/\d{2,}/.test(raw) && !/--\s*\d+\s*of\s*\d+\s*--/.test(raw)) return false;
@@ -110,6 +141,9 @@ function isHeadingLike(rawLine: string, normalized: string) {
 
   // Check known heading phrases BEFORE rejecting lowercase-only lines
   if (KNOWN_HEADING_PHRASES.has(normalized)) return true;
+
+  // ALL CAPS lines that match a known pattern are headings
+  if (/^[A-Z\s&/]+$/.test(raw) && raw.length <= 40 && KNOWN_HEADING_PHRASES.has(normalized)) return true;
 
   if (/^[a-z\s]+$/.test(raw)) return false;
 

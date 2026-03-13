@@ -131,25 +131,30 @@ function mapSkills(sections: Record<string, string[]>) {
     ...(sections.technologies || []),
   ];
   const tokens = lines
-    .flatMap((line) => line.replace(/^skills?:?/i, '').split(/,|;|\||\/|·|•|â€¢|Â·/))
+    .flatMap((line) => {
+      // Remove common leading labels like "Skills:", "Technical Skills:", etc.
+      const cleaned = line.replace(/^(?:skills?|technical\s+skills?|core\s+skills?|key\s+skills?|technologies)\s*:?\s*/i, '');
+      // Split on common delimiters: comma, semicolon, pipe, bullet, middot
+      return cleaned.split(/,|;|\||\u00b7|\u2022|\u25e6|\u25aa|\u25cf|â€¢|Â·/);
+    })
     .map((token) => cleanLooseText(token))
     .filter((token) => {
-      if (token.length < 2 || token.length > 36) return false;
+      if (token.length < 2 || token.length > 50) return false;
       const words = token.split(/\s+/).filter(Boolean);
-      if (words.length > 2) return false;
+      if (words.length > 4) return false;
       if (/^(and|or|in|on|with|for|to|of|the)$/i.test(words[0] || '')) return false;
       if (/[.!?]/.test(token)) return false;
       if (/@|https?:\/\/|www\./i.test(token)) return false;
       if (CONTACT_LABEL_RE.test(token)) return false;
       if (NAME_BLOCKLIST_RE.test(token)) return false;
       if (isLikelyNameLine(token)) return false;
-      if (ROLE_HINT_RE.test(token) && token.split(/\s+/).length >= 2) return false;
+      if (ROLE_HINT_RE.test(token) && token.split(/\s+/).length >= 3) return false;
       if (/^\#/.test(token)) return false;
       if (/\b\d+\s+of\s+\d+\b/i.test(token)) return false;
       if (/\d{3,}/.test(token)) return false;
       return /[a-z]/i.test(token);
     });
-  return Array.from(new Set(tokens)).slice(0, 20);
+  return Array.from(new Set(tokens)).slice(0, 30);
 }
 
 function mapExperience(parsed: ParsedResumeText) {
