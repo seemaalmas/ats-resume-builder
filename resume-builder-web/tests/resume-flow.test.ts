@@ -10,8 +10,10 @@ import {
   buildEditorRoute,
   buildPendingUploadSession,
   buildResumePayload,
+  clearPendingUploadSession,
   consumePendingUploadSession,
   createScratchEditorState,
+  readPendingUploadSession,
   detectExperienceLevelFromResume,
   getNavigationGateState,
   resolveEditorUploadNavigation,
@@ -544,4 +546,121 @@ test('scratch flow upload resolves to review route and imported mode badge', () 
   assert.equal(navigation.shouldReplace, true);
   assert.equal(navigation.href, '/resume?flow=review&template=modern');
   assert.equal(navigation.modeBadge, 'Imported resume');
+});
+
+test('readPendingUploadSession preserves data across multiple reads without consuming', () => {
+  const storage = new MemoryStorage();
+  const pending = buildPendingUploadSession({
+    title: 'Persistence Test',
+    summary: 'Should survive multiple reads.',
+    skills: ['JS'],
+    experience: [
+      { company: 'TestCo', role: 'Dev', startDate: '2023', endDate: 'Present', highlights: ['Built things'] },
+    ],
+    education: [],
+    projects: [],
+    certifications: [],
+    parsed: {
+      title: 'Persistence Test',
+      summary: 'Should survive multiple reads.',
+      skills: ['JS'],
+      experience: [
+        { company: 'TestCo', role: 'Dev', startDate: '2023', endDate: 'Present', highlights: ['Built things'] },
+      ],
+      education: [],
+      projects: [],
+      certifications: [],
+    },
+  } as any);
+
+  savePendingUploadSession(pending, storage);
+
+  // First read — non-destructive
+  const first = readPendingUploadSession(storage);
+  assert.ok(first);
+  assert.equal(first!.resume.experience.length, 1);
+
+  // Second read — still available
+  const second = readPendingUploadSession(storage);
+  assert.ok(second);
+  assert.equal(second!.resume.summary, 'Should survive multiple reads.');
+
+  // Third read — still available (simulates effect re-runs / page refreshes)
+  const third = readPendingUploadSession(storage);
+  assert.ok(third);
+  assert.equal(third!.resume.experience[0]?.company, 'TestCo');
+
+  // Explicit clear removes it
+  clearPendingUploadSession(storage);
+  assert.equal(readPendingUploadSession(storage), null);
+});
+
+test('pending upload session survives simulated page navigation (non-destructive restore)', () => {
+  const storage = new MemoryStorage();
+  useResumeStore.getState().resetResume();
+
+  const pending = buildPendingUploadSession({
+    title: 'Navigation Test',
+    summary: 'Data should persist through navigation.',
+    skills: ['React', 'TypeScript'],
+    experience: [
+      { company: 'NavCo', role: 'Engineer', startDate: '2022', endDate: 'Present', highlights: ['Built UI'] },
+    ],
+    education: [
+      { institution: 'Test Univ', degree: 'CS', startDate: '2018', endDate: '2022', details: [] },
+    ],
+    projects: [],
+    certifications: [],
+    parsed: {
+      title: 'Navigation Test',
+      summary: 'Data should persist through navigation.',
+      skills: ['React', 'TypeScript'],
+      experience: [
+        { company: 'NavCo', role: 'Engineer', startDate: '2022', endDate: 'Present', highlights: ['Built UI'] },
+      ],
+      education: [
+        { institution: 'Test Univ', degree: 'CS', startDate: '2018', endDate: '2022', details: [] },
+      ],
+      projects: [],
+      certifications: [],
+    },
+  } as any);
+
+  // Simulate /resume/start: save session and stage in store
+  const nav = continueToReviewFromStart({
+    session: pending,
+    template: '',
+    setResume: useResumeStore.getState().setResume,
+    setUploadedFileName: useResumeStore.getState().setUploadedFileName,
+    storage,
+  });
+  assert.equal(nav.enabled, true);
+  assert.equal(nav.cached, true);
+  assert.equal(useResumeStore.getState().resume.experience.length, 1);
+
+  // Simulate navigation: Zustand store is reset (as happens in the reset effect)
+  useResumeStore.getState().resetResume();
+  assert.equal(useResumeStore.getState().resume.experience.length, 0);
+
+  // Simulate restore effect: read (not consume) from sessionStorage
+  const restored = readPendingUploadSession(storage);
+  assert.ok(restored);
+  assert.equal(restored!.resume.experience.length, 1);
+  assert.equal(restored!.resume.experience[0]?.company, 'NavCo');
+  assert.equal(restored!.resume.education.length, 1);
+
+  // Apply restored data to store
+  useResumeStore.getState().setResume(restored!.resume as any);
+  assert.equal(useResumeStore.getState().resume.experience.length, 1);
+  assert.equal(useResumeStore.getState().resume.summary, 'Data should persist through navigation.');
+
+  // Simulate second navigation (e.g. user refreshes) — data still available
+  useResumeStore.getState().resetResume();
+  const secondRestore = readPendingUploadSession(storage);
+  assert.ok(secondRestore);
+  assert.equal(secondRestore!.resume.experience[0]?.role, 'Engineer');
+
+  // Simulate save: clear the pending session
+  clearPendingUploadSession(storage);
+  assert.equal(readPendingUploadSession(storage), null);
 });

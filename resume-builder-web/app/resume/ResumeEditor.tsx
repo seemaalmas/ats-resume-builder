@@ -13,8 +13,8 @@ import {
   buildResumePayload,
   clearActiveResumeSelection,
   clearPendingUploadSession,
-  consumePendingUploadSession,
   createUploadSummary,
+  savePendingUploadSession,
   createScratchEditorState,
   canContinueToAts,
   detectExperienceLevelFromResume,
@@ -322,13 +322,18 @@ export default function ResumeEditor() {
   }, [effectiveResumeId]);
 
   useEffect(() => {
+    // Skip the blanket reset when a pending upload session exists — the restore
+    // effect that follows will populate the store from sessionStorage.
+    if (!effectiveResumeId && isReviewFlow && readPendingUploadSession()) {
+      return;
+    }
     resetResumeStore();
     setImportNotes('');
     setImportRoleLevel('');
     setUploadSummary(null);
     setIsImportedMode(false);
     setActiveStepIndex(0);
-  }, [effectiveResumeId, flowParam, resetResumeStore, templateParam]);
+  }, [effectiveResumeId, flowParam, resetResumeStore, templateParam, isReviewFlow]);
 
   useEffect(() => {
     setRecentCompanies(readRecentCompanies());
@@ -517,7 +522,7 @@ export default function ResumeEditor() {
   useEffect(() => {
     if (effectiveResumeId) return;
     if (isReviewFlow) {
-      const pending = consumePendingUploadSession();
+      const pending = readPendingUploadSession();
       if (pending) {
         clearActiveResumeSelection();
         setResume(() => pending.resume);
@@ -894,6 +899,7 @@ export default function ResumeEditor() {
         setResumeId(result.id);
       }
       persistActiveResumeSelection(result.id);
+      clearPendingUploadSession();
       setStatus('saved');
       dirtyRef.current = false;
       setLastSavedAt(new Date().toLocaleTimeString());
@@ -1136,6 +1142,15 @@ export default function ResumeEditor() {
           .map((item) => item.trim())
           .filter(Boolean),
       );
+      // Persist to sessionStorage so the data survives page refreshes
+      savePendingUploadSession({
+        createdAt: Date.now(),
+        resume: nextResume,
+        importNotes: ingested.importNotes,
+        fileName: ingested.raw.fileName || file.name,
+        roleLevel: ingested.roleLevel as any,
+        uploadSummary: summary,
+      });
       const targetStep = REQUIRED_FLOW_SEQUENCE.indexOf(targetSection);
       if (targetStep >= 0) setActiveStepIndex(targetStep);
       requestAnimationFrame(() => scrollToSection(targetSection));
