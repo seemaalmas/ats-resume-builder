@@ -2090,7 +2090,7 @@ function restructureResumeText(text: string): string {
  */
 function mergeFragmentedLines(text: string): string {
   const ROLE_KEYWORD_RE = /^(?:Vice\s+President|President|Director|Manager|Engineer|Developer|Consultant|Analyst|Architect|Specialist|Executive|Officer|Coordinator|Administrator|Trainee|Intern)\b/i;
-  const ROLE_PREFIX_RE = /^(?:Senior|Junior|Lead|Associate|Principal|Staff|Chief|Assistant|Systems?|Technical\s+Support\s*\/?\s*)?$/i;
+  const ROLE_PREFIX_RE = /^(?:Senior|Junior|Lead|Associate|Principal|Staff|Chief|Assistant|Systems?|Technical\s+Support\s*\/?\s*)(?:\s+\S+)?$/i;
   const KNOWN_MULTI_WORD_HEADINGS: Record<string, string> = {
     'professional': 'EXPERIENCE',
     'work': 'EXPERIENCE',

@@ -163,6 +163,8 @@ function mapExperience(parsed: ParsedResumeText) {
   let current: ExperienceItem | null = null;
   let currentCompany = '';
   let pendingRole = '';
+  let pendingStartDate = '';
+  let pendingEndDate = '';
   const pendingDateBlockIndexes: number[] = [];
 
   // Keep role/company/date grouping stable while preserving multiple roles under one company.
@@ -192,6 +194,8 @@ function mapExperience(parsed: ParsedResumeText) {
     if (company) currentCompany = company;
     current = { company, role, startDate, endDate, highlights: [] };
     pendingRole = '';
+    pendingStartDate = '';
+    pendingEndDate = '';
   };
 
   const assignDatesToCurrentOrRecent = (startDate: string, endDate: string) => {
@@ -235,13 +239,10 @@ function mapExperience(parsed: ParsedResumeText) {
     const normalizedSourceLine = normalizeLegacyBulletPrefix(rawLine);
     const normalizedLine = cleanLooseText(normalizedSourceLine);
     if (!normalizedLine) continue;
-
     const heading = normalizeHeading(normalizedSourceLine);
     if (heading && heading !== 'experience') {
-      if (/education|projects|certifications|skills/.test(heading)) {
-        pushCurrent();
-      }
-      continue;
+      pushCurrent();
+      break; // Stop processing — we've left the experience section
     }
 
     if (isCrossSectionBoundary(normalizedSourceLine)) {
@@ -264,7 +265,7 @@ function mapExperience(parsed: ParsedResumeText) {
     const bullet = extractBulletLine(normalizedSourceLine);
     if (bullet) {
       if (pendingRole && currentCompany && !current) {
-        startCurrent({ company: currentCompany, role: pendingRole });
+        startCurrent({ company: currentCompany, role: pendingRole, startDate: pendingStartDate, endDate: pendingEndDate });
       }
       if (!appendBulletToNearestBlock(bullet)) {
         current = { company: cleanCompanyName(currentCompany), role: '', startDate: '', endDate: '', highlights: [bullet] };
@@ -273,11 +274,16 @@ function mapExperience(parsed: ParsedResumeText) {
     }
 
     if (isStandaloneDateLine(normalizedLine)) {
-      if (pendingRole && currentCompany && !current) {
-        startCurrent({ company: currentCompany, role: pendingRole });
+      if (pendingRole && !current) {
+        // Don't start entry yet — the company line typically follows the date.
+        // Store dates as pending so they can be used when the company is found.
+        const dates = extractDates(normalizedLine);
+        pendingStartDate = dates.start;
+        pendingEndDate = dates.end;
+      } else {
+        const dates = extractDates(normalizedLine);
+        assignDatesToCurrentOrRecent(dates.start, dates.end);
       }
-      const dates = extractDates(normalizedLine);
-      assignDatesToCurrentOrRecent(dates.start, dates.end);
       continue;
     }
 
@@ -287,9 +293,15 @@ function mapExperience(parsed: ParsedResumeText) {
       !looksLikeCompany(normalizedLine) &&
       !looksLikeEducationRoleLine(normalizedLine) &&
       !isDateLine(normalizedLine) &&
-      !/@|\sat\s|\s\|\s|\s-\s|\s—\s|\s–\s|â€”|â€“/i.test(normalizedLine)
+      !/@|\sat\s|\s\|\s|\s-\s|\s—\s|\s–\s|â€”|â€”/i.test(normalizedLine)
     ) {
       if (current) pushCurrent();
+      // If there was a previous pending role with dates but no company found,
+      // flush it as an entry with the last-known company before setting the new role.
+      if (pendingRole && (pendingStartDate || pendingEndDate)) {
+        startCurrent({ company: currentCompany, role: pendingRole, startDate: pendingStartDate, endDate: pendingEndDate });
+        pushCurrent();
+      }
       pendingRole = normalizedLine;
       continue;
     }
@@ -297,7 +309,7 @@ function mapExperience(parsed: ParsedResumeText) {
     const companyHeading = parseCompanyHeading(normalizedLine);
     if (companyHeading) {
       if (pendingRole) {
-        startCurrent({ company: companyHeading, role: pendingRole });
+        startCurrent({ company: companyHeading, role: pendingRole, startDate: pendingStartDate, endDate: pendingEndDate });
         continue;
       }
       if (current && current.company && current.role && normalizeCompany(current.company) !== normalizeCompany(companyHeading)) {
@@ -334,6 +346,10 @@ function mapExperience(parsed: ParsedResumeText) {
     if (normalizedLine.length > 10) current.highlights.push(normalizedLine);
   }
 
+  // Flush any remaining pending role with dates
+  if (pendingRole && (pendingStartDate || pendingEndDate)) {
+    startCurrent({ company: currentCompany, role: pendingRole, startDate: pendingStartDate, endDate: pendingEndDate });
+  }
   pushCurrent();
   return blocks;
 }
@@ -504,7 +520,7 @@ function guessTitle(lines: string[], header: HeaderMapping) {
     .find((line) => {
       if (!line) return false;
       if (isBlockedTitleValue(line)) return false;
-      if (line.length > 96 || /@|https?:\/\/|www\./i.test(line)) return false;
+      if (line.length > 140 || /@|https?:\/\/|www\./i.test(line)) return false;
       if (!ROLE_HINT_RE.test(line)) return false;
       if (!/[|/]|(?:\s[-–—]\s)/.test(line)) return false;
       // Reject lines that contain date ranges (these are experience entries, not titles)
@@ -561,8 +577,11 @@ function isLikelyNameLine(line: string) {
 
 function extractHeadline(lines: string[], nameIndex: number) {
   if (nameIndex < 0) return '';
-  for (let offset = 1; offset <= 2; offset += 1) {
-    const candidate = cleanLooseText(lines[nameIndex + offset] || '');
+  // Search up to 10 lines after the name — contact info (mobile, email, address)
+  // often sits between the name and the headline/tagline.
+  const searchLimit = Math.min(lines.length, nameIndex + 11);
+  for (let idx = nameIndex + 1; idx < searchLimit; idx += 1) {
+    const candidate = cleanLooseText(lines[idx] || '');
     if (!candidate) continue;
     if (isLikelyHeadlineLine(candidate)) return candidate;
   }
@@ -575,21 +594,36 @@ function isLikelyHeadlineLine(line: string) {
   if (isBlockedTitleValue(cleaned)) return false;
   if (/@|https?:\/\/|www\./i.test(cleaned)) return false;
   if (/\d{6,}/.test(cleaned)) return false;
-  if (cleaned.length < 8 || cleaned.length > 120) return false;
+  if (cleaned.length < 8 || cleaned.length > 140) return false;
   const hasDelimiter = /[|/]|(?:\s[-–—]\s)/.test(cleaned);
   if (!hasDelimiter) return false;
   return ROLE_HINT_RE.test(cleaned);
 }
 
 function extractLocation(lines: string[]) {
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
     if (/address\s*:/i.test(line)) {
       const match = line.match(/address\s*:\s*(.+?)(?:\s+date of birth|$)/i);
       const value = cleanLooseText(match ? match[1] : line.replace(/address\s*:/i, ''));
       if (value) return value;
+      // Address label on its own line — check the next non-empty line
+      for (let j = i + 1; j < Math.min(lines.length, i + 3); j += 1) {
+        const next = cleanLooseText(lines[j]);
+        if (!next) continue;
+        // Skip if next line looks like another label or section heading
+        if (CONTACT_LABEL_RE.test(next) || normalizeHeading(lines[j])) break;
+        return next;
+      }
     }
   }
-  const fallback = lines.find((line) => /\b(remote|usa|united states|india|canada|uk)\b/i.test(line) || /\b[A-Z]{2}\s*\d{4,6}\b/.test(line));
+  // Fallback: look for lines that contain location-like patterns
+  const fallback = lines.find((line) => {
+    const cleaned = cleanLooseText(line);
+    // Match city/ZIP patterns like "Wagholi, Pune - 411057"
+    if (/\b\d{5,6}\b/.test(cleaned) && /,/.test(cleaned)) return true;
+    return /\b(remote|usa|united states|india|canada|uk)\b/i.test(cleaned) || /\b[A-Z]{2}\s*\d{4,6}\b/.test(cleaned);
+  });
   return cleanLooseText(fallback || '');
 }
 
@@ -723,13 +757,30 @@ function buildExperienceSource(parsed: ParsedResumeText) {
     ...(parsed.sections.work || []),
     ...(parsed.sections.career || []),
   ];
+  // Prefer section-parsed lines when available — the tail approach leaks
+  // education/certification content into the experience mapper.
+  if (sectionLines.length) {
+    // Also collect experience-like lines from other sections (e.g. education)
+    // that may contain experience entries due to PDF page breaks — but only
+    // if those sections contain clear role+company patterns.
+    const otherSections = Object.entries(parsed.sections)
+      .filter(([key]) => !['experience', 'employment', 'work', 'career', 'unmapped'].includes(key));
+    const otherLines = otherSections.flatMap(([, lines]) => lines);
+    const hasRoleCompany = otherLines.some((l) => looksLikeRole(l) && looksLikeRoleTitle(l) && !looksLikeEducationRoleLine(l));
+    if (hasRoleCompany) {
+      const spillover = collectLikelyExperienceLines(otherLines);
+      if (spillover.length) return [...sectionLines, ...spillover];
+    }
+    return sectionLines;
+  }
   const firstExperienceHeading = parsed.lines.findIndex((line) => normalizeHeading(line) === 'experience');
   if (firstExperienceHeading >= 0) {
     const tail = parsed.lines.slice(firstExperienceHeading + 1);
     return tail.length ? tail : sectionLines;
   }
-  if (sectionLines.length) return sectionLines;
-  return collectLikelyExperienceLines(parsed.sections.unmapped || []);
+  // No explicit experience section — collect role-like lines from all sections
+  const allLines = Object.values(parsed.sections).flat();
+  return collectLikelyExperienceLines(allLines.length ? allLines : parsed.lines);
 }
 
 function looksLikeExperienceHeader(line: string) {
@@ -830,7 +881,7 @@ function cleanCompanyName(value: string) {
 }
 
 function looksLikeLocationFragment(value: string) {
-  return /\b(remote|usa|united states|india|canada|uk|australia|singapore)\b/i.test(value)
+  return /\b(remote|usa|united states|india|canada|uk|australia|singapore|pune|mumbai|bangalore|bengaluru|delhi|hyderabad|chennai|kolkata|noida|gurgaon|gurugram|new york|san francisco|london|berlin|tokyo)\b/i.test(value)
     || /\b[A-Z]{2}\b/.test(value);
 }
 
@@ -922,15 +973,24 @@ function looksLikeCompany(line: string) {
   if (!cleaned) return false;
   // "Technologies - HTML, CSS, ..." or "Technologies: ..." is NOT a company
   if (/^Technologies\s*[-:]/i.test(cleaned)) return false;
-  if (looksLikeRole(cleaned) && !/(inc|llc|ltd|corp|company|technologies|systems|labs|solutions|group|studio|partners|bank|university|health|consulting|digital)\b/i.test(cleaned)) {
-    return false;
+  if (looksLikeRole(cleaned)) {
+    // "Systems Engineer", "Systems Analyst", etc. are role titles, not companies
+    if (/\bsystems?\s+(?:engineer|developer|analyst|administrator|architect|specialist)\b/i.test(cleaned)) {
+      return false;
+    }
+    if (!/(inc|llc|ltd|corp|company|technologies|systems|labs|solutions|group|studio|partners|bank|university|health|consulting|digital)\b/i.test(cleaned)) {
+      return false;
+    }
   }
   if (/(inc|llc|ltd|corp|company|technologies|systems|labs|solutions|group|studio|partners|bank|university|health|consulting|digital)\b/i.test(cleaned)) {
     return true;
   }
-  const tokens = cleaned.split(/\s+/).filter(Boolean);
+  // Handle "Company, Location" pattern (e.g. "Ernst & Young, Pune")
+  const commaParts = cleaned.split(',').map((part) => part.trim()).filter(Boolean);
+  const mainPart = commaParts.length >= 2 ? commaParts[0] : cleaned;
+  const tokens = mainPart.split(/\s+/).filter(Boolean);
   if (tokens.length >= 2 && tokens.length <= 7) {
-    const titleCaseTokens = tokens.filter((token) => /^[A-Z][A-Za-z0-9&'.-]*$/.test(token)).length;
+    const titleCaseTokens = tokens.filter((token) => /^[A-Z][A-Za-z0-9&'.-]*$/.test(token) || /^&$/.test(token)).length;
     return titleCaseTokens >= Math.ceil(tokens.length * 0.6);
   }
   return false;
@@ -992,7 +1052,10 @@ function isDateLine(line: string) {
 
 function isStandaloneDateLine(line: string) {
   if (!isDateLine(line)) return false;
-  const stripped = cleanLooseText(stripDates(line));
+  const stripped = cleanLooseText(
+    stripDates(line)
+      .replace(/\b(to|till|until|through)\b/gi, '') // remove date range separators
+  );
   if (!stripped) return true;
   return !/[a-z0-9]/i.test(stripped);
 }
@@ -1012,7 +1075,12 @@ function extractDates(line: string) {
   // matching the “-” inside YYYY-MM tokens
   const rangePattern = new RegExp(`(${dateToken})\\s*(?:\\s-\\s|\\bto\\b|–|—|â€”|â€”)\\s*((?:present|current|now|till\\s*date)|${dateToken})?`, 'i');
   const match = line.match(rangePattern);
-  if (!match) return { start: '', end: '' };
+  // Also handle bare YYYY-YYYY (no spaces around dash, e.g. “2017-2020”)
+  if (!match) {
+    const bareRange = line.match(/\b((?:19|20)\d{2})-((?:19|20)\d{2})\b/);
+    if (bareRange) return { start: normalizeDateToken(bareRange[1]), end: normalizeDateToken(bareRange[2]) };
+    return { start: '', end: '' };
+  }
   return {
     start: normalizeDateToken(match[1]),
     end: normalizeDateToken(match[2] || ''),
