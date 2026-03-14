@@ -160,3 +160,90 @@ Jul 2014 - Aug 2020
     }
   }
 });
+
+test('POST /resumes/parse-upload regression: ATS-exported PDF text round-trips correctly', async () => {
+  const service = createService();
+  const atsResumeText = `
+Chandan Kumar
+cks011992@gmail.com | +91-9307003382 | Pune, MH 411057 | https://www.linkedin.com/in/chandankumar007
+
+SUMMARY
+10+ years of experience in the IT industry with expertise in full-stack development, agile planning, and driving innovation across enterprise platforms.
+
+SKILLS
+JavaScript, React, Node.js, TypeScript, Angular, HTML, CSS, AWS, Docker, Git, Agile methodologies, CI/CD, MongoDB, PostgreSQL, Redis, Microservices, REST APIs, GraphQL, Kubernetes
+
+EXPERIENCE
+AVP - Full Stack Engineer, Citi Corp
+Dec 2022 - Present
+Led cross-functional teams to deliver enterprise-grade applications
+Architected scalable microservices using Node.js and React
+Improved release quality through CI guardrails
+
+Senior Technology Consultant, Ernst & Young
+Oct 2021 - Dec 2022
+Engineered reusable template architecture for resume exports
+Reduced frontend effort by 60% across teams
+
+Senior Software Developer, One Network Enterprises
+Sep 2020 - Sep 2021
+Managed complete development lifecycle from UX planning to deployment
+Improved production reliability with better observability
+
+Lead UI Developer, Infosys Ltd
+Jul 2014 - Aug 2020
+Directed end-to-end UI delivery for FINACLE
+Standardized coding patterns for maintainability
+
+EDUCATION
+Master of Computer Applications
+Savitribai Phule Pune University
+2012 - 2014
+
+Bachelor of Computer Applications
+University of Pune
+2009 - 2012
+
+CERTIFICATIONS
+AWS Certified Solutions Architect
+Amazon Web Services | 2023
+`;
+
+  const result = await service.parseResumeUpload({
+    originalname: 'ats-export.txt',
+    mimetype: 'text/plain',
+    buffer: Buffer.from(atsResumeText, 'utf8'),
+  });
+
+  // Contact
+  assert.equal(result.parsed.contact.fullName, 'Chandan Kumar');
+  assert.equal(result.parsed.contact.email, 'cks011992@gmail.com');
+
+  // Experience: 4 entries with correct role/company splits
+  assert.equal(result.parsed.experience.length, 4, `Expected 4 experiences, got ${result.parsed.experience.length}`);
+  const companies = result.parsed.experience.map((item) => item.company.toLowerCase());
+  assert.ok(companies.some((c) => c.includes('citi')), 'Missing Citi Corp');
+  assert.ok(companies.some((c) => c.includes('ernst')), 'Missing Ernst & Young');
+  assert.ok(companies.some((c) => c.includes('one network')), 'Missing One Network');
+  assert.ok(companies.some((c) => c.includes('infosys')), 'Missing Infosys');
+
+  // AVP entry should have correct role (not truncated to just "AVP")
+  const citi = result.parsed.experience.find((item) => item.company.toLowerCase().includes('citi'));
+  assert.ok(citi.role.toLowerCase().includes('avp') || citi.role.toLowerCase().includes('full stack'),
+    `Citi role should contain AVP or Full Stack: "${citi.role}"`);
+  assert.equal(citi.startDate, 'Dec 2022');
+  assert.equal(citi.endDate, 'Present');
+  assert.ok(citi.highlights.length >= 1, 'Citi should have highlights');
+
+  // Skills: should extract most items (not just 3)
+  assert.ok(result.parsed.skills.length >= 10, `Expected >= 10 skills, got ${result.parsed.skills.length}`);
+
+  // Education
+  assert.ok(result.parsed.education.length >= 2, `Expected >= 2 education, got ${result.parsed.education.length}`);
+
+  // Certifications
+  assert.ok(result.parsed.certifications.length >= 1, `Expected >= 1 certifications, got ${result.parsed.certifications.length}`);
+
+  // Role level should NOT be FRESHER
+  assert.notEqual(result.parsed.roleLevel, 'FRESHER', 'Role level should not be FRESHER for 10+ years exp');
+});

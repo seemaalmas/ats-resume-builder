@@ -143,7 +143,9 @@ function mapSkills(sections: Record<string, string[]>) {
       const words = token.split(/\s+/).filter(Boolean);
       if (words.length > 4) return false;
       if (/^(and|or|in|on|with|for|to|of|the)$/i.test(words[0] || '')) return false;
-      if (/[.!?]/.test(token)) return false;
+      if (/[!?]/.test(token)) return false;
+      // Reject sentence-ending periods but allow tech names like "Node.js", "ASP.NET", "Vue.js"
+      if (/\.\s/.test(token) || /\.$/.test(token)) return false;
       if (/@|https?:\/\/|www\./i.test(token)) return false;
       if (CONTACT_LABEL_RE.test(token)) return false;
       if (NAME_BLOCKLIST_RE.test(token)) return false;
@@ -896,6 +898,19 @@ function splitRoleCompany(line: string) {
     const parts = normalized.split(/\sat\s/i);
     if (parts.length === 2) return { role: cleanLooseText(parts[0]), company: cleanCompanyName(parts[1]) };
   }
+
+  // Try comma-based “Role, Company” split BEFORE dash-based splits.
+  // ATS-exported PDFs use “AVP - Full Stack Engineer, Citi Corp” where the dash
+  // is part of the role title and the comma separates role from company.
+  if (normalized.includes(',')) {
+    const lastCommaIdx = normalized.lastIndexOf(',');
+    const left = cleanLooseText(normalized.substring(0, lastCommaIdx));
+    const right = cleanLooseText(normalized.substring(lastCommaIdx + 1));
+    if (left && right && looksLikeCompany(right) && !looksLikeLocationFragment(right) && looksLikeRole(left)) {
+      return { role: left, company: cleanCompanyName(right) };
+    }
+  }
+
   for (const delimiter of [' — ', ' – ', ' - ', ' | ', ' â€” ']) {
     if (normalized.includes(delimiter)) {
       const parts = normalized.split(delimiter);
@@ -983,7 +998,11 @@ function looksLikeCompany(line: string) {
     }
   }
   if (/(inc|llc|ltd|corp|company|technologies|systems|labs|solutions|group|studio|partners|bank|university|health|consulting|digital)\b/i.test(cleaned)) {
-    return true;
+    // Guard: long sentence-like lines that incidentally contain suffix words
+    // (e.g. "Designed distributed systems handling 1M concurrent users") are
+    // NOT company names. Real company names rarely exceed 6 words.
+    const wordCount = cleaned.split(/\s+/).filter(Boolean).length;
+    if (wordCount <= 6) return true;
   }
   // Handle "Company, Location" pattern (e.g. "Ernst & Young, Pune")
   const commaParts = cleaned.split(',').map((part) => part.trim()).filter(Boolean);
