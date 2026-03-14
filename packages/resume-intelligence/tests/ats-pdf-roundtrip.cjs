@@ -242,4 +242,110 @@ JavaScript, React, Node.js, Vue.js, TypeScript, ASP.NET, C#, Docker
   assert.ok(mapped.skills.some((s) => s.toLowerCase().includes('asp')), `Missing ASP.NET: ${JSON.stringify(mapped.skills)}`);
 });
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Test 6: EXACT text from pdf-parse of an ATS-exported PDF (real user data)
+// This is the actual text that the parse-upload API receives after pdf-parse
+// extracts it from an ATS-generated PDF.
+// ──────────────────────────────────────────────────────────────────────────────
+test('ATS PDF roundtrip: exact pdf-parse output from real ATS-exported resume', () => {
+  const exactPdfText = `Tech Lead / AVP - Full Stack Engineering / Frontend Strategist
+cks011992@gmail.com | 9307003382 | Pune, MH 411057 | https://www.linkedin.com/in/chandankumar007
+
+SUMMARY
+- 10+ years of experience in the IT industry with a strong track record of delivering high-ROI software solutions for enterprise clients
+in the nancial sector. - Hands-on expertise in ReactJS, Redux, NodeJS, MongoDB, PolymerJS, and full-stack architecture - used to
+modernize legacy platforms and increase performance by up to 35%. - Led cross-functional teams of 10+ developers across
+multiple geogr
+
+SKILLS
+Agile methodologies, agile planning, driving innovation
+
+EXPERIENCE
+AVP, Citi Corp
+Dec 2022 - Present
+Leading cross-functional teams (10+ members) to deliver enterprise-grade applications while driving customer-centric
+innovation
+Led a team of 10+ engineers to deliver high-performance frontend modules using ReactJS and NodeJS, improving system
+Partnered with Product Owners to redene UI workows, enhancing usability and customer satisfaction
+Championed code reviews, architecture discussions, and cross-team syncs to align project delivery across verticals
+Delivered consistent Agile sprint results and helped reduce release cycle time by 25%
+Spearheaded a UI/UX modernization initiative that increased engagement and system adoption across multiple departments
+Reduced post-deployment defects to <2% through proactive testing, reusable component libraries, and dev mentorship
+Recognized by leadership for driving a culture of ownership, collaboration, and engineering excellence
+Senior Software Developer, One Network Enterprises
+Sep 2020 - Sep 2021
+Led end-to-end UX implementation and frontend architecture using ReactJS, while mentoring the development team and
+driving
+Managed complete development lifecycle from UX planning to deployment, enhancing platform usability and client satisfaction
+Designed enterprise-grade UX mockups and visual ows, resulting in a 30% increase in user task completion rate
+Authored and maintained version-controlled technical documentation to streamline stakeholder communication and reduce
+Delivered data-intensive visual dashboards using ReactJS and D3, enabling clearer decision-making for clients
+Developed scalable ReactJS components with reusable architecture, improving dev eciency and reducing rework by 40%
+Proposed and implemented UX enhancements that reduced support queries by 25% within two release cycles
+Mentored junior developers on frontend architecture and project design patterns, leading to stronger code consistency
+Fostered cross-functional collaboration and team cohesion through Agile ceremonies and knowledge-sharing sessions
+Delivered award-nominated UX improvements that improved client retention and reduced churn in post-implementation
+feedback
+Recognized by leadership for improving design-to-development turnaround time by 35% through reusable component libraries
+and
+Senior Technology Consultant, Ernst & Young
+Jan 2010 - Jun 2014
+Led UX transformation and enterprise-grade frontend development using React and congurable HTML templates, enabling
+Engineered a reusable HTML template system using React & HTML5, reducing frontend development effort by 60% across
+Standardized UI best practices across teams, resulting in a 30% decrease in bugs and faster release cycles
+Led UX design optimization efforts, increasing end-user engagement by 25% through improved layout and accessibility
+Ensured zero-defect UI delivery in client-facing portals by implementing rigorous testing workows
+
+EDUCATION
+BB
+Indian Institute of Technology Delhi
+Jul 2008 - Aug 2012
+
+-- 1 of 1 --`;
+
+  const mapped = mapResume(exactPdfText);
+
+  // ── Experience: 3 entries with correct role/company ──
+  assert.equal(mapped.experience.length, 3,
+    `Expected 3 experiences, got ${mapped.experience.length}: ${JSON.stringify(mapped.experience.map((e) => e.role + ' @ ' + e.company))}`);
+
+  const citi = mapped.experience.find((e) => e.company.toLowerCase().includes('citi'));
+  assert.ok(citi, 'Missing Citi Corp experience');
+  assert.ok(citi.role.toLowerCase().includes('avp'), `Citi role should contain AVP: "${citi.role}"`);
+  assert.equal(citi.startDate, 'Dec 2022');
+  assert.equal(citi.endDate, 'Present');
+  assert.ok(citi.highlights.length >= 5, `Citi should have >= 5 highlights, got ${citi.highlights.length}`);
+
+  const oneNetwork = mapped.experience.find((e) => e.company.toLowerCase().includes('one network'));
+  assert.ok(oneNetwork, 'Missing One Network Enterprises experience');
+  assert.ok(oneNetwork.role.toLowerCase().includes('developer'), `One Network role wrong: "${oneNetwork.role}"`);
+  assert.equal(oneNetwork.startDate, 'Sep 2020');
+  assert.equal(oneNetwork.endDate, 'Sep 2021');
+
+  const ey = mapped.experience.find((e) => e.company.toLowerCase().includes('ernst'));
+  assert.ok(ey, 'Missing Ernst & Young experience');
+  assert.ok(ey.role.toLowerCase().includes('consultant'), `EY role wrong: "${ey.role}"`);
+
+  // ── Education ──
+  assert.ok(mapped.education.length >= 1, `Expected >= 1 education, got ${mapped.education.length}`);
+  assert.ok(mapped.education.some((e) => e.institution.toLowerCase().includes('technology') || e.institution.toLowerCase().includes('delhi')),
+    'Missing IIT Delhi');
+
+  // ── Role level should be SENIOR, not FRESHER ──
+  assert.notEqual(mapped.roleLevel, 'FRESHER', 'Role level should not be FRESHER');
+  assert.equal(mapped.roleLevel, 'SENIOR', 'Role level should be SENIOR for 10+ years experience');
+
+  // ── Title ──
+  assert.ok(mapped.title.toLowerCase().includes('tech lead') || mapped.title.toLowerCase().includes('avp'),
+    `Title should reference Tech Lead or AVP: "${mapped.title}"`);
+
+  // ── Summary ──
+  assert.ok(mapped.summary.includes('10+'), 'Summary should mention 10+ years');
+
+  // ── Contact ──
+  // Note: ATS PDF template puts title in h1 instead of name, so name extraction
+  // may fail. But email/phone should still be findable in unmapped/summary text.
+  // This is a known limitation of ATS PDF round-tripping (name is lost in h1).
+});
+
 console.log('ATS PDF roundtrip tests registered — running via node:test');
