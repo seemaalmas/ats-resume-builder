@@ -120,7 +120,14 @@ function mapSummary(sections: Record<string, string[]>) {
     ...(sections.objective || []),
   ];
   const fallback = lines.length ? lines : (sections.unmapped || []).slice(0, 2);
-  return fallback.join(' ').slice(0, 400).trim();
+  const joined = fallback
+    .map((line) => line.replace(/^\s*[-•*·]\s*/, '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .slice(0, 400)
+    .trim();
+  return joined;
 }
 
 function mapSkills(sections: Record<string, string[]>) {
@@ -156,7 +163,65 @@ function mapSkills(sections: Record<string, string[]>) {
       if (/\d{3,}/.test(token)) return false;
       return /[a-z]/i.test(token);
     });
+  // If dedicated skills section yielded very few results, supplement from summary & experience
+  if (tokens.length < 5) {
+    const contextLines = [
+      ...(sections.summary || []),
+      ...(sections.profile || []),
+      ...(sections.experience || []),
+    ];
+    const contextText = contextLines.join(' ');
+    const extracted = extractTechSkillsFromText(contextText);
+    const existing = new Set(tokens.map((t) => t.toLowerCase()));
+    for (const skill of extracted) {
+      if (!existing.has(skill.toLowerCase())) {
+        tokens.push(skill);
+        existing.add(skill.toLowerCase());
+      }
+    }
+  }
   return Array.from(new Set(tokens)).slice(0, 30);
+}
+
+const KNOWN_TECH_SKILLS = [
+  'React', 'ReactJS', 'React.js', 'Angular', 'AngularJS', 'Vue', 'Vue.js', 'VueJS',
+  'Node.js', 'NodeJS', 'Express', 'Express.js', 'NestJS', 'Next.js', 'NextJS',
+  'JavaScript', 'TypeScript', 'Python', 'Java', 'C\\+\\+', 'C#', 'Go', 'Golang', 'Rust', 'Ruby',
+  'PHP', 'Swift', 'Kotlin', 'Scala', 'R', 'Perl', 'Dart',
+  'HTML5?', 'CSS3?', 'SASS', 'SCSS', 'Less', 'Tailwind', 'Bootstrap',
+  'MongoDB', 'PostgreSQL', 'MySQL', 'Redis', 'Elasticsearch', 'DynamoDB', 'Cassandra',
+  'SQL', 'NoSQL', 'GraphQL', 'REST', 'RESTful',
+  'AWS', 'Azure', 'GCP', 'Docker', 'Kubernetes', 'K8s', 'Terraform',
+  'Jenkins', 'CI/CD', 'Git', 'GitHub', 'GitLab', 'Bitbucket',
+  'Redux', 'MobX', 'Zustand', 'Context API',
+  'Spring Boot', 'Spring', 'Django', 'Flask', 'FastAPI', 'Rails',
+  'Webpack', 'Vite', 'Babel', 'ESLint', 'Prettier',
+  'Jest', 'Mocha', 'Cypress', 'Selenium', 'Playwright',
+  'Figma', 'Sketch', 'Adobe XD',
+  'Agile', 'Scrum', 'Kanban', 'JIRA', 'Confluence',
+  'Microservices', 'Serverless', 'DevOps', 'Linux',
+  'D3', 'D3.js', 'Three.js', 'jQuery', 'Polymer', 'PolymerJS',
+  'Kafka', 'RabbitMQ', 'gRPC', 'WebSocket',
+  'TDD', 'BDD', 'OOP', 'MVC', 'MVVM',
+  'Sass', 'Material UI', 'Ant Design', 'Chakra UI',
+];
+
+function extractTechSkillsFromText(text: string): string[] {
+  const found: string[] = [];
+  const seen = new Set<string>();
+  for (const skill of KNOWN_TECH_SKILLS) {
+    const pattern = new RegExp(`\\b${skill}\\b`, 'gi');
+    const match = text.match(pattern);
+    if (match) {
+      const normalized = match[0];
+      const key = normalized.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        found.push(normalized);
+      }
+    }
+  }
+  return found;
 }
 
 function mapExperience(parsed: ParsedResumeText) {
@@ -405,6 +470,9 @@ function mapEducation(sections: Record<string, string[]>) {
       continue;
     }
     if (!current) continue;
+    // Filter page footers like "1 of 1", "Page 2 of 3"
+    if (/^\s*(?:page\s+)?\d+\s+of\s+\d+\s*$/i.test(normalizedLine)) continue;
+    if (/^-+\s*\d+\s+of\s+\d+\s*-+$/i.test(normalizedLine)) continue;
     const detail = extractBulletLine(line);
     if (detail) {
       current.details.push(detail);
@@ -626,7 +694,19 @@ function extractLocation(lines: string[]) {
     if (/\b\d{5,6}\b/.test(cleaned) && /,/.test(cleaned)) return true;
     return /\b(remote|usa|united states|india|canada|uk)\b/i.test(cleaned) || /\b[A-Z]{2}\s*\d{4,6}\b/.test(cleaned);
   });
-  return cleanLooseText(fallback || '');
+  if (!fallback) return '';
+  // If the line is pipe-separated (e.g. "email | phone | City, ST 12345 | url"), extract only the location segment
+  if (fallback.includes('|')) {
+    const segments = fallback.split('|').map((s) => s.trim());
+    const locSegment = segments.find((seg) => {
+      if (/@/.test(seg)) return false;
+      if (/https?:\/\//i.test(seg)) return false;
+      if (/^\+?\d[\d\s().-]{5,}\d$/.test(seg.replace(/\s+/g, ''))) return false;
+      return /\b\d{5,6}\b/.test(seg) || /,/.test(seg) || /\b(remote|usa|united states|india|canada|uk)\b/i.test(seg) || /\b[A-Z]{2}\s*\d{4,6}\b/.test(seg);
+    });
+    return cleanLooseText(locSegment || '');
+  }
+  return cleanLooseText(fallback);
 }
 
 function isBlockedTitleValue(value: string) {
@@ -972,11 +1052,11 @@ function looksLikeRoleTitle(line: string) {
 function looksLikeEducationRoleLine(line: string) {
   const cleaned = cleanLooseText(line);
   if (!cleaned) return false;
-  return /\b(b\.?e|btech|mtech|bachelor|master|associate|diploma|phd|education)\b/i.test(cleaned);
+  return looksLikeEducationDegreeLine(cleaned);
 }
 
 function looksLikeEducationDegreeLine(line: string) {
-  return /\b(b\.?e|btech|mtech|bachelor|master|associate|diploma|phd|education)\b/i.test(line);
+  return /\b(b\.?e\.?|b\.?a\.?|b\.?s\.?|b\.?sc|bb\.?a|b\.?com|b\.?tech|m\.?e\.?|m\.?a\.?|m\.?s\.?|m\.?sc|m\.?tech|m\.?b\.?a|m\.?com|m\.?phil|bachelor|master|associate|diploma|phd|doctorate|b\.?c\.?a|m\.?c\.?a|b\.?b\.?a?|ll\.?b)\b/i.test(line);
 }
 
 function looksLikeEducationInstitutionLine(line: string) {

@@ -5,7 +5,14 @@ exports.normalizeText = normalizeText;
 const section_normalizer_js_1 = require("./section-normalizer.js");
 function parseResumeText(rawText) {
     const text = normalizeText(rawText);
-    const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+    const lines = text.split('\n').map((line) => line.trim()).filter((line) => {
+        if (!line)
+            return false;
+        // Filter page footers like "-- 1 of 1 --", "Page 2 of 3"
+        if (/^-*\s*(?:page\s+)?\d+\s+of\s+\d+\s*-*$/i.test(line))
+            return false;
+        return true;
+    });
     const sections = {};
     let current = 'unmapped';
     for (const line of lines) {

@@ -8,7 +8,12 @@ export type ParsedResumeText = {
 
 export function parseResumeText(rawText: string): ParsedResumeText {
   const text = normalizeText(rawText);
-  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+  const lines = text.split('\n').map((line) => line.trim()).filter((line) => {
+    if (!line) return false;
+    // Filter page footers like "-- 1 of 1 --", "Page 2 of 3"
+    if (/^-*\s*(?:page\s+)?\d+\s+of\s+\d+\s*-*$/i.test(line)) return false;
+    return true;
+  });
   const sections: Record<string, string[]> = {};
   let current: CanonicalSection | string = 'unmapped';
 
