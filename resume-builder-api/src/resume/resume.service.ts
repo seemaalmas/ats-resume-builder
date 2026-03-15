@@ -1962,7 +1962,7 @@ function normalizeText(text: string) {
 
 const LEGACY_BULLET_PREFIX_RE = /^\s*(?:[-*•·]+|\d{1,3}[.)]|[a-z][.)])?\s*(impact|achievement|result|highlights?|accomplishment)s?:\s*/i;
 
-function normalizeUploadText(text: string) {
+export function normalizeUploadText(text: string) {
   const basic = normalizeText(text)
     .split('\n')
     .map((line) => normalizeLegacyBulletPrefix(line))
@@ -1980,7 +1980,11 @@ function normalizeUploadText(text: string) {
 
   // Merge fragmented lines that mammoth splits across multiple lines
   // (e.g. "Assistant\nVice President -" → "Assistant Vice President -")
-  return mergeFragmentedLines(restructured);
+  const merged = mergeFragmentedLines(restructured);
+
+  // Fix multi-column PDF layout: sidebar skills mixed into experience,
+  // header info in skills section, dates at page boundaries, etc.
+  return fixMultiColumnPdfLayout(merged);
 }
 
 /**
@@ -2323,6 +2327,210 @@ function mergeFragmentedLines(text: string): string {
   }
 
   return merged.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
+ * Fix multi-column PDF layout issues.
+ *
+ * Multi-column resumes (e.g. skills sidebar + main content) produce garbled
+ * text when extracted by pdf-parse.  Common symptoms:
+ *   - "SOFT SKILLS" / "TECHNICAL SKILLS" headings appear before the name
+ *   - Individual skill words (HTML5, CSS3, ReactJS…) land inside WORK EXPERIENCE
+ *   - Dates end up at page boundaries (in PROJECTS or after highlights)
+ *   - Experience entries leak into the EDUCATION section after a page break
+ */
+function fixMultiColumnPdfLayout(text: string): string {
+  const lines = text.split('\n');
+
+  const SKILL_HEADING_RE = /^(SOFT\s+SKILLS?|TECHNICAL\s+SKILLS?|KEY\s+SKILLS?|CORE\s+SKILLS?)$/i;
+  const EXP_HEADING_RE = /^(WORK\s+EXPERIENCE|PROFESSIONAL\s+EXPERIENCE|EMPLOYMENT\s+HISTORY|EXPERIENCE)$/i;
+  const SUMMARY_HEADING_RE = /^(PROFESSIONAL\s+SUMMARY|SUMMARY|PROFILE\s+SUMMARY|CAREER\s+SUMMARY|CAREER\s+OBJECTIVE)$/i;
+  const EDUCATION_HEADING_RE = /^(EDUCATION|ACADEMIC\s+BACKGROUND|EDUCATIONAL\s+QUALIFICATIONS?)$/i;
+  const DATE_LINE_RE = /^\(?(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{4}\s*(?:-|to|–|—)\s*(?:Present|Current|Now|\d{4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{4})\)?$/i;
+  const MM_YYYY_DATE_LINE_RE = /^\(?\d{1,2}[/-]\d{4}\s*(?:-|to|–|—)\s*(?:Present|Current|Now|\d{1,2}[/-]\d{4})\)?$/i;
+  const PAGE_FOOTER_RE = /^-*\s*\d+\s+of\s+\d+\s*-*$/i;
+  const ROLE_HINT_RE = /\b(AVP|Senior|Junior|Lead|Associate|Principal|Staff|Chief|Vice\s+President|Assistant\s+Vice|Manager|Director|Engineer|Developer|Consultant|Analyst|Architect|Specialist|Executive|Officer|President|Intern|Head|Founder)\b/i;
+  const DEGREE_RE = /\b(b\.?e|b\.?a|b\.?s|b\.?tech|m\.?e|m\.?a|m\.?s|m\.?tech|m\.?b\.?a|bachelor|master|associate|diploma|phd|high\s+school)\b/i;
+
+  function isDateLine(line: string) {
+    const t = line.trim();
+    return DATE_LINE_RE.test(t) || MM_YYYY_DATE_LINE_RE.test(t);
+  }
+
+  // --- Detect multi-column pattern ---
+  let earlySkillHeadingIdx = -1;
+  let nonEmptyCount = 0;
+  for (let i = 0; i < lines.length && nonEmptyCount < 5; i++) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+    nonEmptyCount++;
+    if (SKILL_HEADING_RE.test(trimmed)) { earlySkillHeadingIdx = i; break; }
+  }
+
+  const expHeadingIdx = lines.findIndex((l) => EXP_HEADING_RE.test(l.trim()));
+  if (earlySkillHeadingIdx < 0 || expHeadingIdx < 0) return text;
+
+  // --- Step 1: Move header/contact lines to the top, remove empty skill headings ---
+  const summaryIdx = lines.findIndex((l) => SUMMARY_HEADING_RE.test(l.trim()));
+  const headerEnd = summaryIdx >= 0 ? summaryIdx : expHeadingIdx;
+
+  const headerLines: string[] = [];
+  for (let i = earlySkillHeadingIdx; i < headerEnd; i++) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+    if (SKILL_HEADING_RE.test(trimmed)) { lines[i] = ''; continue; } // Remove empty skill headings
+    const isContact = /^(Mobile|Phone|Email|E-mail|Address|Date of Birth|DOB|LinkedIn|GitHub|Website)\s*:?/i.test(trimmed);
+    const isUrl = /^https?:\/\//i.test(trimmed);
+    const isPipeSeparated = /\|/.test(trimmed) && trimmed.length < 120;
+    const isNameLike = /^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}$/.test(trimmed) && trimmed.length < 40;
+    const isLongParagraph = trimmed.length > 80 && /[a-z]/.test(trimmed);
+    if (isContact || isUrl || isPipeSeparated || isNameLike || isLongParagraph) {
+      headerLines.push(trimmed);
+      lines[i] = '';
+    }
+  }
+
+  if (headerLines.length > 0) {
+    lines.splice(0, 0, ...headerLines, '');
+  }
+
+  // --- Step 2: Extract sidebar skill words from the experience section ---
+  const newExpIdx = lines.findIndex((l) => EXP_HEADING_RE.test(l.trim()));
+  if (newExpIdx < 0) return lines.join('\n');
+
+  const sidebarSkills: string[] = [];
+  for (let i = newExpIdx + 1; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+    if (detectHeading(trimmed.toLowerCase())) break;
+    if (ROLE_HINT_RE.test(trimmed)) break;
+    if (isDateLine(trimmed)) break;
+    if (trimmed.startsWith('-')) break;
+    if (trimmed.length > 30) break;
+    const words = trimmed.split(/\s+/).filter(Boolean);
+    if (words.length <= 3 && /^[A-Za-z]/.test(trimmed)) {
+      sidebarSkills.push(trimmed);
+      lines[i] = '';
+    } else {
+      break;
+    }
+  }
+
+  if (sidebarSkills.length > 0) {
+    const skillsSection = ['', 'SKILLS', sidebarSkills.join(', '), ''];
+    const insertAt = lines.findIndex((l) => EXP_HEADING_RE.test(l.trim()));
+    if (insertAt >= 0) lines.splice(insertAt, 0, ...skillsSection);
+  }
+
+  // --- Step 3: Remove page footers ---
+  for (let i = 0; i < lines.length; i++) {
+    if (PAGE_FOOTER_RE.test(lines[i].trim())) lines[i] = '';
+  }
+
+  // --- Step 4: Move experience entries from EDUCATION back to EXPERIENCE ---
+  // Also collect orphaned dates from ALL non-experience sections
+  const eduIdx = lines.findIndex((l) => EDUCATION_HEADING_RE.test(l.trim()));
+  const expLastIdx = lines.findIndex((l) => EXP_HEADING_RE.test(l.trim()));
+  if (eduIdx >= 0 && expLastIdx >= 0) {
+    const expFromEdu: string[] = [];
+    let collectingExp = false;
+    for (let i = eduIdx + 1; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      // Stop at non-education, non-experience headings
+      if (trimmed && detectHeading(trimmed.toLowerCase()) && !EXP_HEADING_RE.test(trimmed) && !EDUCATION_HEADING_RE.test(trimmed)) {
+        if (collectingExp) { expFromEdu.push(lines[i]); lines[i] = ''; }
+        break;
+      }
+      // Second EXPERIENCE heading = continuation from page break
+      if (EXP_HEADING_RE.test(trimmed)) {
+        collectingExp = true;
+        lines[i] = '';
+        continue;
+      }
+      if (!trimmed) {
+        if (collectingExp) { expFromEdu.push(''); lines[i] = ''; }
+        continue;
+      }
+      // Detect role that's NOT a degree/institution → experience entry leaked into education
+      if (ROLE_HINT_RE.test(trimmed) && trimmed.length < 60 && !trimmed.startsWith('-') && !DEGREE_RE.test(trimmed)) {
+        collectingExp = true;
+      }
+      if (collectingExp) {
+        expFromEdu.push(lines[i]);
+        lines[i] = '';
+      }
+    }
+
+    // Insert moved experience entries right before EDUCATION
+    if (expFromEdu.length > 0) {
+      const eduNewIdx = lines.findIndex((l) => EDUCATION_HEADING_RE.test(l.trim()));
+      if (eduNewIdx >= 0) {
+        lines.splice(eduNewIdx, 0, ...expFromEdu, '');
+      }
+    }
+  }
+
+  // --- Step 5: Collect ALL orphaned dates and associate with undated experience entries ---
+  // Rebuild section tracking after mutations
+  const finalLines = lines;
+  const allOrphaned: Array<{ idx: number; value: string }> = [];
+  const allRoles: Array<{ idx: number; hasDate: boolean }> = [];
+  let inExp = false;
+  for (let i = 0; i < finalLines.length; i++) {
+    const t = finalLines[i].trim();
+    if (EXP_HEADING_RE.test(t)) { inExp = true; continue; }
+    if (t && detectHeading(t.toLowerCase()) && !EXP_HEADING_RE.test(t)) { inExp = false; }
+    if (!t) continue;
+
+    if (inExp && ROLE_HINT_RE.test(t) && t.length < 60 && !t.startsWith('-')) {
+      let hasDate = false;
+      for (let j = i + 1; j < Math.min(i + 4, finalLines.length); j++) {
+        if (isDateLine(finalLines[j])) { hasDate = true; break; }
+      }
+      allRoles.push({ idx: i, hasDate });
+    }
+
+    // Orphaned dates = date lines in non-experience sections, or date lines
+    // in experience that don't follow a role within 3 lines
+    if (isDateLine(t)) {
+      let followsRole = false;
+      for (let j = Math.max(0, i - 3); j < i; j++) {
+        const prev = finalLines[j].trim();
+        if (ROLE_HINT_RE.test(prev) && prev.length < 60 && !prev.startsWith('-')) {
+          followsRole = true;
+          break;
+        }
+      }
+      if (!followsRole) {
+        allOrphaned.push({ idx: i, value: t });
+      }
+    }
+  }
+
+  const undated = allRoles.filter((r) => !r.hasDate);
+  for (let d = 0; d < Math.min(allOrphaned.length, undated.length); d++) {
+    const role = undated[d];
+    const date = allOrphaned[d];
+    // Find company line (first non-empty line after role)
+    let companyIdx = role.idx + 1;
+    for (let j = role.idx + 1; j < finalLines.length; j++) {
+      if (finalLines[j].trim()) { companyIdx = j; break; }
+    }
+    // Insert date right after company
+    finalLines.splice(companyIdx + 1, 0, date.value);
+    // Remove original orphaned date
+    const origIdx = date.idx + (companyIdx + 1 <= date.idx ? 1 : 0);
+    if (origIdx < finalLines.length) finalLines[origIdx] = '';
+    // Adjust subsequent indices
+    for (let k = d + 1; k < allOrphaned.length; k++) {
+      if (allOrphaned[k].idx > companyIdx) allOrphaned[k].idx++;
+    }
+    for (let k = d + 1; k < undated.length; k++) {
+      if (undated[k].idx > companyIdx) undated[k].idx++;
+    }
+  }
+
+  return finalLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 function escapeRegExp(str: string): string {
