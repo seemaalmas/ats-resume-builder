@@ -8,7 +8,7 @@ export type CanonicalSection =
   | 'unmapped';
 
 const SECTION_SYNONYMS: Record<CanonicalSection, string[]> = {
-  summary: ['summary', 'professional summary', 'profile', 'profile summary', 'about', 'about me', 'objective', 'career summary', 'career objective', 'executive summary', 'personal statement', 'introduction'],
+  summary: ['summary', 'professional summary', 'pro essional summary', 'profile', 'profile summary', 'pro le summary', 'about', 'about me', 'objective', 'career summary', 'career objective', 'executive summary', 'personal statement', 'introduction'],
   skills: [
     'skills',
     'technical skills',
@@ -17,6 +17,7 @@ const SECTION_SYNONYMS: Record<CanonicalSection, string[]> = {
     'key skill',
     'competencies',
     'core competencies',
+    'key competencies',
     'technologies',
     'soft skills',
     'languages',
@@ -24,8 +25,12 @@ const SECTION_SYNONYMS: Record<CanonicalSection, string[]> = {
     'technical competencies',
     'areas of expertise',
     'expertise',
+    'technical expertise',
     'technical proficiencies',
     'proficiencies',
+    'skill set',
+    'functional skills',
+    'domain expertise',
   ],
   experience: [
     'experience',
@@ -34,14 +39,15 @@ const SECTION_SYNONYMS: Record<CanonicalSection, string[]> = {
     'employment',
     'employment history',
     'professional experience',
+    'pro essional experience',
     'career history',
     'professional background',
     'relevant experience',
     'industry experience',
   ],
-  education: ['education', 'academics', 'academic background', 'education history', 'qualifications', 'educational qualifications', 'academic qualifications', 'academic details'],
+  education: ['education', 'academics', 'academic background', 'education history', 'qualifications', 'quali cations', 'educational qualifications', 'academic qualifications', 'academic details'],
   projects: ['projects', 'notable projects', 'research', 'achievements', 'accomplishments', 'key projects', 'project experience', 'key achievements'],
-  certifications: ['certifications', 'licenses', 'certificates', 'professional certifications', 'training', 'training and certifications', 'courses'],
+  certifications: ['certifications', 'certi cations', 'licenses', 'certificates', 'professional certifications', 'pro essional certi cations', 'training', 'training and certifications', 'courses'],
   unmapped: [],
 };
 
@@ -56,6 +62,12 @@ export function normalizeHeading(line: string): CanonicalSection | '' {
     .toLowerCase()
     .replace(/--\s*\d+\s*of\s*\d+\s*--/g, ' ')
     .replace(/[:\s]+$/g, '')
+    // Normalize Unicode ligatures before stripping non-alpha chars
+    .replace(/\uFB03/g, 'ffi')
+    .replace(/\uFB04/g, 'ffl')
+    .replace(/\uFB00/g, 'ff')
+    .replace(/\uFB01/g, 'fi')
+    .replace(/\uFB02/g, 'fl')
     .replace(/[^a-z\s]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -70,6 +82,7 @@ export function normalizeHeading(line: string): CanonicalSection | '' {
 const KNOWN_HEADING_PHRASES = new Set([
   'professional summary',
   'profile summary',
+  'pro le summary',
   'career summary',
   'career objective',
   'executive summary',
@@ -77,6 +90,7 @@ const KNOWN_HEADING_PHRASES = new Set([
   'introduction',
   'work experience',
   'professional experience',
+  'pro essional experience',
   'professional background',
   'relevant experience',
   'industry experience',
@@ -86,6 +100,7 @@ const KNOWN_HEADING_PHRASES = new Set([
   'technical competencies',
   'areas of expertise',
   'expertise',
+  'technical expertise',
   'technical proficiencies',
   'proficiencies',
   'education',
@@ -103,8 +118,10 @@ const KNOWN_HEADING_PHRASES = new Set([
   'key projects',
   'project experience',
   'certifications',
+  'certi cations',
   'certificates',
   'professional certifications',
+  'pro essional certi cations',
   'training',
   'training and certifications',
   'courses',
@@ -116,11 +133,13 @@ const KNOWN_HEADING_PHRASES = new Set([
   'about me',
   'objective',
   'core competencies',
+  'key competencies',
   'competencies',
   'technologies',
   'academics',
   'academic background',
   'qualifications',
+  'quali cations',
   'notable projects',
   'research',
   'work history',
@@ -129,6 +148,9 @@ const KNOWN_HEADING_PHRASES = new Set([
   'key skill',
   'licenses',
   'education history',
+  'skill set',
+  'functional skills',
+  'domain expertise',
 ]);
 
 function isHeadingLike(rawLine: string, normalized: string) {

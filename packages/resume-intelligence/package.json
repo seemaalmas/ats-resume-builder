@@ -10,7 +10,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node tests/smoke.cjs && node tests/experience-mapper.cjs && node tests/experience-enhancer.cjs"
+    "test": "npm run build && node tests/smoke.cjs && node tests/experience-mapper.cjs && node tests/experience-enhancer.cjs && node tests/ligature-parser.cjs && node tests/ats-roundtrip.cjs"
   },
   "dependencies": {
     "resume-schemas": "file:../resume-schemas"

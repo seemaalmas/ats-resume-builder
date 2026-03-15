@@ -664,3 +664,128 @@ test('pending upload session survives simulated page navigation (non-destructive
   clearPendingUploadSession(storage);
   assert.equal(readPendingUploadSession(storage), null);
 });
+
+test('frontend hydration correctly maps ATS resume with all sections populated', () => {
+  useResumeStore.getState().resetResume();
+
+  // Simulate a parse-upload response with all fields populated
+  // (what the backend now returns after ligature fix)
+  const uploadResult = {
+    title: 'Tech Lead / AVP - Full Stack Engineering / Frontend Strategist',
+    summary: '10+ years of experience in the IT industry with a strong track record of delivering high-ROI software solutions.',
+    skills: ['JavaScript', 'TypeScript', 'React', 'Angular', 'Node.js', 'Express', 'MongoDB', 'PostgreSQL', 'AWS', 'Docker', 'Agile methodologies', 'Java'],
+    experience: [
+      {
+        company: 'Barclays',
+        role: 'Tech Lead / AVP',
+        startDate: 'Jan 2022',
+        endDate: 'Present',
+        highlights: ['Led frontend architecture modernization across 3 product lines', 'Mentored team of 8 engineers on React best practices'],
+      },
+      {
+        company: 'Infosys',
+        role: 'Senior Frontend Developer',
+        startDate: 'Jul 2018',
+        endDate: 'Dec 2021',
+        highlights: ['Built enterprise dashboard used by 500+ internal users'],
+      },
+      {
+        company: 'TCS',
+        role: 'Frontend Developer',
+        startDate: 'Jun 2015',
+        endDate: 'Jun 2018',
+        highlights: ['Developed responsive web applications for banking clients'],
+      },
+    ],
+    education: [
+      {
+        institution: 'Siddhant College of Engineering, Pune University',
+        degree: 'Bachelor of Engineering in Computer Science',
+        startDate: '2011',
+        endDate: '2015',
+        details: [],
+      },
+    ],
+    projects: [],
+    certifications: [
+      { name: 'AWS Solutions Architect Associate', date: '2023', details: [] },
+    ],
+    roleLevel: 'SENIOR' as const,
+    fileName: 'resume-cmmd1j4ei0001bninaqk7xr1k.pdf',
+    parsed: {
+      title: 'Tech Lead / AVP - Full Stack Engineering / Frontend Strategist',
+      summary: '10+ years of experience in the IT industry with a strong track record of delivering high-ROI software solutions.',
+      skills: ['JavaScript', 'TypeScript', 'React', 'Angular', 'Node.js', 'Express', 'MongoDB', 'PostgreSQL', 'AWS', 'Docker', 'Agile methodologies', 'Java'],
+      experience: [
+        {
+          company: 'Barclays',
+          role: 'Tech Lead / AVP',
+          startDate: 'Jan 2022',
+          endDate: 'Present',
+          highlights: ['Led frontend architecture modernization across 3 product lines', 'Mentored team of 8 engineers on React best practices'],
+        },
+        {
+          company: 'Infosys',
+          role: 'Senior Frontend Developer',
+          startDate: 'Jul 2018',
+          endDate: 'Dec 2021',
+          highlights: ['Built enterprise dashboard used by 500+ internal users'],
+        },
+        {
+          company: 'TCS',
+          role: 'Frontend Developer',
+          startDate: 'Jun 2015',
+          endDate: 'Jun 2018',
+          highlights: ['Developed responsive web applications for banking clients'],
+        },
+      ],
+      education: [
+        {
+          institution: 'Siddhant College of Engineering, Pune University',
+          degree: 'Bachelor of Engineering in Computer Science',
+          startDate: '2011',
+          endDate: '2015',
+          details: [],
+        },
+      ],
+      projects: [],
+      certifications: [
+        { name: 'AWS Solutions Architect Associate', date: '2023', details: [] },
+      ],
+      roleLevel: 'SENIOR' as const,
+    },
+  };
+
+  // Build pending session and verify hydration
+  const pending = buildPendingUploadSession(uploadResult as any);
+  assert.ok(pending.uploadSummary.sectionsPopulated.includes('experience'), 'experience section populated');
+  assert.ok(pending.uploadSummary.sectionsPopulated.includes('skills'), 'skills section populated');
+  assert.ok(pending.uploadSummary.sectionsPopulated.includes('education'), 'education section populated');
+  assert.equal(pending.uploadSummary.companyCount, 3, '3 companies extracted');
+  assert.equal(pending.resume.experience.length, 3, '3 experience entries in draft');
+  assert.equal(pending.resume.skills.length, 12, '12 skills in draft');
+  assert.equal(pending.resume.education.length, 1, '1 education entry in draft');
+  assert.equal(pending.resume.certifications.length, 1, '1 certification in draft');
+
+  // Stage in Zustand store
+  const storage = new MemoryStorage();
+  const nav = continueToReviewFromStart({
+    session: pending,
+    template: 'modern',
+    setResume: useResumeStore.getState().setResume,
+    setUploadedFileName: useResumeStore.getState().setUploadedFileName,
+    storage,
+  });
+  assert.equal(nav.enabled, true);
+
+  // Verify Zustand store has full data
+  const state = useResumeStore.getState();
+  assert.equal(state.resume.experience.length, 3, 'store has 3 experience entries');
+  assert.ok(state.resume.experience.some((e) => e.company === 'Barclays'), 'Barclays in store');
+  assert.ok(state.resume.experience.some((e) => e.company === 'Infosys'), 'Infosys in store');
+  assert.ok(state.resume.experience.some((e) => e.company === 'TCS'), 'TCS in store');
+  assert.ok(state.resume.skills.length >= 10, 'skills populated in store');
+  assert.equal(state.resume.education.length, 1, 'education populated in store');
+  assert.ok(state.resume.summary.includes('10+ years'), 'summary in store');
+  assert.equal(state.uploadedFileName, 'resume-cmmd1j4ei0001bninaqk7xr1k.pdf', 'file name in store');
+});

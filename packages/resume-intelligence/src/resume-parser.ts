@@ -29,6 +29,13 @@ export function parseResumeText(rawText: string): ParsedResumeText {
 export function normalizeText(text: string) {
   const canonical = text
     .replace(/\u0000/g, '')
+    // Normalize Unicode ligatures commonly mangled by pdf-parse:
+    // ﬃ→ffi, ﬄ→ffl, ﬀ→ff, ﬁ→fi, ﬂ→fl (order matters: longest first)
+    .replace(/\uFB03/g, 'ffi')
+    .replace(/\uFB04/g, 'ffl')
+    .replace(/\uFB00/g, 'ff')
+    .replace(/\uFB01/g, 'fi')
+    .replace(/\uFB02/g, 'fl')
     .replace(/[\u2013\u2014]/g, '-')
     .replace(/â€¢|â—¦|â–ª|â—/g, '- ')
     .replace(/[\u2022\u25e6\u25aa\u25cf\u00b7]/g, '- ')
