@@ -81,6 +81,7 @@ out
 # Nuxt.js build / generate output
 .nuxt
 dist
+!packages/resume-intelligence/dist/
 .output
 
 # Gatsby files

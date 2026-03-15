@@ -783,7 +783,11 @@ export function finalizeExperience(input: {
 
 const EXPERIENCE_SECTION_PATTERN = /(professional\s+experience|work\s+experience|experience)/i;
 const STOP_SECTION_PATTERN = /^(skills|education|projects|certifications|achievements|hobbies|languages)\b/i;
-const DATE_RANGE_PATTERN = /((?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s*\d{4}|\b\d{4}\b)(?:\s*(?:-|to|–|—)\s*(?:present|current|now|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s*\d{4}|\b\d{4}\b))?/i;
+const DATE_TOKEN = String.raw`(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s*\d{4}|\d{1,2}[/]\d{4}|\d{4}[/-]\d{1,2}|\b\d{4}\b)`;
+const DATE_RANGE_PATTERN = new RegExp(
+  `(${DATE_TOKEN})(?:\\s*(?:-|to|–|—)\\s*(?:present|current|now|${DATE_TOKEN}))?`,
+  'i',
+);
 
 export function extractExperienceFromText(fullText: string, parsed?: ParsedResumeText) {
   const rawText = String(fullText || '').trim();
@@ -859,9 +863,32 @@ function parseWorkExperienceEntries(lines: string[]) {
 
   const startEntry = (company: string, role: string, startDate: string, endDate: string) => {
     flushHighlightBuffer();
+    let finalCompany = company;
+    let finalRole = role;
+    // If role is empty but company contains "Role, Company" or "Role | Company", split them
+    if (!finalRole && finalCompany) {
+      const commaMatch = finalCompany.match(/^(.+?),\s+(.+)$/);
+      if (commaMatch) {
+        finalRole = commaMatch[1].trim();
+        finalCompany = commaMatch[2].trim();
+      } else {
+        const pipeMatch = finalCompany.match(/^(.+?)\s*\|\s*(.+)$/);
+        if (pipeMatch) {
+          finalRole = pipeMatch[1].trim();
+          finalCompany = pipeMatch[2].trim();
+        } else {
+          // Trailing dash means it's a role title, not a company (e.g. "Assistant Vice President -")
+          const trailingDash = finalCompany.match(/^(.+?)\s*[-–—]\s*$/);
+          if (trailingDash) {
+            finalRole = trailingDash[1].trim();
+            finalCompany = '';
+          }
+        }
+      }
+    }
     const entry: ExperienceExtractionEntry = {
-      company,
-      role,
+      company: finalCompany,
+      role: finalRole,
       startDate,
       endDate,
       highlights: [],
@@ -900,6 +927,15 @@ function parseWorkExperienceEntries(lines: string[]) {
     if (inline) {
       startEntry(inline.company, inline.role, inline.startDate, inline.endDate);
       continue;
+    }
+
+    // DOCX multi-line: if current entry has no company yet, fill it before other checks
+    if (currentEntry) {
+      const cur = currentEntry as ExperienceExtractionEntry;
+      if (!cur.company && !cur.highlights.length && !highlightBuffer && looksLikeCompanyName(line)) {
+        cur.company = line;
+        continue;
+      }
     }
 
     if (!pendingCompany && isCompanyLineCandidate(line, nextLine)) {
@@ -951,7 +987,7 @@ function parseRoleLine(line: string) {
   const match = DATE_RANGE_PATTERN.exec(line);
   if (!match) return null;
   const range = match[0];
-  const tokens = range.split(/(?:-|to|â€“|â€”)/i).map((token) => token.trim()).filter(Boolean);
+  const tokens = range.split(/(?:-|to|\u2014|\u2013)/i).map((token) => token.trim()).filter(Boolean);
   const startRaw = tokens[0] || '';
   const endRaw = tokens.length > 1 ? tokens[tokens.length - 1] : '';
   const beforeRange = line.slice(0, match.index).trim();
@@ -985,6 +1021,18 @@ function collapseNarrativeCompanies(entries: ExperienceExtractionEntry[]) {
     output.push({ ...entry, highlights: [...entry.highlights] });
   }
   return output;
+}
+
+function looksLikeCompanyName(line: string) {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.length > 60) return false;
+  if (/^[-•*]/.test(trimmed)) return false;
+  if (trimmed.includes('. ') || trimmed.endsWith('.')) return false;
+  if (NARRATIVE_VERB_PATTERN.test(trimmed)) return false;
+  if (COMPANY_KEYWORD_PATTERN.test(trimmed)) return true;
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (words.length >= 1 && words.length <= 6 && words.every((w) => /^[A-Z&]/.test(w))) return true;
+  return false;
 }
 
 function isCompanyLineCandidate(line: string, nextLine?: string) {
