@@ -1921,12 +1921,81 @@ function normalizeUploadText(text: string) {
     .join('\n')
     .trim();
 
+  // Split concatenated date patterns from ATS PDF extraction.
+  // pdf-parse sometimes merges adjacent HTML elements without newlines:
+  //   "Citi CorpDec 2022 - Present" → "Citi Corp\nDec 2022 - Present"
+  //   "EnterprisesSep 2020" → "Enterprises\nSep 2020"
+  const deconcat = splitConcatenatedDates(basic);
+
   // Post-process: restructure flat text by splitting on known patterns
-  const restructured = restructureResumeText(basic);
+  const restructured = restructureResumeText(deconcat);
 
   // Merge fragmented lines that mammoth splits across multiple lines
   // (e.g. "Assistant\nVice President -" → "Assistant Vice President -")
   return mergeFragmentedLines(restructured);
+}
+
+/**
+ * Split date patterns that pdf-parse concatenated to preceding text.
+ *
+ * When Puppeteer renders ATS HTML to PDF, adjacent block elements
+ * (e.g. <h3>Role, Company</h3><p>Dec 2022 - Present</p>) sometimes
+ * get extracted by pdf-parse as a single line without separating whitespace:
+ *   "AVP, Citi CorpDec 2022 - Present" → should be two lines
+ *   "One Network EnterprisesSep 2020 - Sep 2021" → should be two lines
+ *   "Indian Institute of Technology DelhiJul 2008 - Aug 2012" → should be two lines
+ *
+ * Also handles MM/YYYY and YYYY concatenation without spaces.
+ */
+export function splitConcatenatedDates(text: string): string {
+  // 1. Split month name directly concatenated to preceding letter, including
+  //    cases where there's no space between month and year (e.g. "CorpDec2022").
+  //    Also normalizes the space between month and year in one pass.
+  //    e.g. "CorpDec 2022" → "Corp\nDec 2022"
+  //    e.g. "CorpDec2022" → "Corp\nDec 2022"
+  let result = text.replace(
+    /([a-zA-Z])((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)[a-z]*)\s*(\d{4})/gi,
+    (match, prefix, month, year) => {
+      // Don't split if the prefix char is part of the month itself
+      // e.g. don't split "December 2022" → the prefix 'D' + month "ecember" forms a full month name
+      const combined = prefix + month;
+      if (/^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)(?:uary|ruary|ch|il|e|y|ust|tember|ober|ember)?$/i.test(combined)) {
+        return `${combined} ${year}`;
+      }
+      return `${prefix}\n${month} ${year}`;
+    },
+  );
+
+  // 2. Split MM/YYYY or MM-YYYY concatenated to preceding letter
+  //    e.g. "Company01/2020" → "Company\n01/2020"
+  result = result.replace(
+    /([a-zA-Z])(\d{1,2}[/-]\d{4})/g,
+    '$1\n$2',
+  );
+
+  // 3. Split bare YYYY concatenated to preceding letter when followed by a date separator
+  //    e.g. "Company2020 - Present" → "Company\n2020 - Present"
+  result = result.replace(
+    /([a-zA-Z])((?:19|20)\d{2})(?=\s*(?:\s-\s|-|–|—|to)\s)/gi,
+    '$1\n$2',
+  );
+
+  // 5. Split short degree codes concatenated with institution names
+  //    e.g. "BBIndian Institute" → "BB\nIndian Institute"
+  //    Pattern: 2-4 uppercase letters directly followed by a capitalized word
+  //    (only within education-like context — after an EDUCATION heading)
+  const educationStart = result.search(/\bEDUCATION\b/i);
+  if (educationStart >= 0) {
+    const before = result.substring(0, educationStart);
+    const after = result.substring(educationStart);
+    const fixedAfter = after.replace(
+      /^([A-Z]{2,5})([A-Z][a-z]{2,})/gm,
+      '$1\n$2',
+    );
+    result = before + fixedAfter;
+  }
+
+  return result;
 }
 
 /**
