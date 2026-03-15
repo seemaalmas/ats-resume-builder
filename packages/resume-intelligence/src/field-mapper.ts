@@ -496,18 +496,18 @@ function mapHeader(lines: string[]): HeaderMapping {
     return { fullName: '', headline: '', contact: undefined };
   }
 
+  // Even when no name is found, return contact with email/phone/location/links
+  // so that ATS PDF round-trips still recover contact info.
   return {
     fullName: bestName,
     headline,
-    contact: bestName.length >= 2
-      ? {
-        fullName: bestName,
-        email: emailMatch ? emailMatch[0] : undefined,
-        phone: phoneMatch ? cleanLooseText(phoneMatch[1] || phoneMatch[0]) : undefined,
-        location: location || undefined,
-        links: links.length ? links : undefined,
-      }
-      : undefined,
+    contact: {
+      fullName: bestName,
+      email: emailMatch ? emailMatch[0] : undefined,
+      phone: phoneMatch ? cleanLooseText(phoneMatch[1] || phoneMatch[0]) : undefined,
+      location: location || undefined,
+      links: links.length ? links : undefined,
+    },
   };
 }
 
@@ -980,7 +980,25 @@ function looksLikeEducationDegreeLine(line: string) {
 }
 
 function looksLikeEducationInstitutionLine(line: string) {
-  return /\b(university|college|school|institute|academy)\b/i.test(line);
+  const cleaned = cleanLooseText(line);
+  if (!cleaned) return false;
+  // Match explicit institution words
+  if (/\b(university|college|school|institute|academy|polytechnic|conservatory)\b/i.test(cleaned)) return true;
+  // Match common Indian institution abbreviations (IIT, IIIT, NIT, BITS, etc.)
+  if (/\b(IIT|IIIT|NIT|BITS|SPPU|VTU|JNTU|AKTU|MIT|DTU|NSIT)\b/.test(cleaned)) return true;
+  // Reject dates, degrees, short abbreviations, and bullet points
+  if (cleaned.length < 3) return false;
+  if (isStandaloneDateLine(cleaned)) return false;
+  if (looksLikeEducationDegreeLine(cleaned)) return false;
+  if (/^[-•*]/.test(cleaned)) return false;
+  // Title-case line within an education section that isn't a degree or date
+  // is likely an institution name (e.g. "SPPU", "IIT Delhi", "Harvard")
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  if (words.length >= 1 && words.length <= 8) {
+    const titleCaseWords = words.filter((w) => /^[A-Z]/.test(w));
+    if (titleCaseWords.length >= Math.ceil(words.length * 0.5)) return true;
+  }
+  return false;
 }
 
 function looksLikeCompany(line: string) {

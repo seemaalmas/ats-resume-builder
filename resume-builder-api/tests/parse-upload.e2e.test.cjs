@@ -247,3 +247,55 @@ Amazon Web Services | 2023
   // Role level should NOT be FRESHER
   assert.notEqual(result.parsed.roleLevel, 'FRESHER', 'Role level should not be FRESHER for 10+ years exp');
 });
+
+test('POST /resumes/parse-upload regression: contact extracted even when first line is title not name', async () => {
+  const service = createService();
+  const atsResumeText = `
+Tech Lead / AVP - Full Stack Engineering / Frontend Strategist
+cks011992@gmail.com | 9307003382 | Pune, MH 411057 | https://www.linkedin.com/in/chandankumar007
+
+SUMMARY
+10+ years of experience in the IT industry.
+
+SKILLS
+JavaScript, React, Node.js, TypeScript, Angular, CSS, AWS, Docker
+
+EXPERIENCE
+AVP, Citi Corp
+Dec 2022 - Present
+Led cross-functional teams to deliver enterprise-grade applications
+Architected scalable microservices using Node.js and React
+
+Senior Technology Consultant, Ernst & Young
+Oct 2021 - Dec 2022
+Engineered reusable template architecture
+Reduced frontend effort by 60%
+
+EDUCATION
+Master of Computer Applications
+SPPU
+Jan 2012 - Jan 2014
+`;
+
+  const result = await service.parseResumeUpload({
+    originalname: 'ats-title-header.txt',
+    mimetype: 'text/plain',
+    buffer: Buffer.from(atsResumeText, 'utf8'),
+  });
+
+  // Contact must be populated with email/phone even when name is not recognized
+  assert.ok(result.parsed.contact, 'Contact must exist');
+  assert.equal(result.parsed.contact.email, 'cks011992@gmail.com', 'Email must be extracted');
+  assert.ok(result.parsed.contact.phone && result.parsed.contact.phone.includes('9307003382'), 'Phone must be extracted');
+
+  // Experience must still parse correctly
+  assert.ok(result.parsed.experience.length >= 2, `Expected >= 2 experiences, got ${result.parsed.experience.length}`);
+  assert.ok(result.parsed.experience.some((e) => e.company.toLowerCase().includes('citi')), 'Missing Citi Corp');
+
+  // Skills
+  assert.ok(result.parsed.skills.length >= 5, `Expected >= 5 skills, got ${result.parsed.skills.length}`);
+
+  // Education with abbreviation institution
+  assert.ok(result.parsed.education.length >= 1, `Expected >= 1 education, got ${result.parsed.education.length}`);
+  assert.ok(result.parsed.education.some((e) => e.institution.includes('SPPU')), 'SPPU should be recognized as institution');
+});

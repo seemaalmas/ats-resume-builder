@@ -624,29 +624,10 @@ export class ResumeService {
     }
 
     const normalized = normalizeUploadText(trimmed);
-    // DEBUG: Write extracted text and normalized text to files for troubleshooting
-    try {
-      const fs = require('fs');
-      fs.writeFileSync('/tmp/debug-raw-text.txt', trimmed, 'utf8');
-      fs.writeFileSync('/tmp/debug-normalized-text.txt', normalized, 'utf8');
-      console.log(`[parse-upload DEBUG] raw text length=${trimmed.length}, normalized length=${normalized.length}`);
-    } catch (_e) { /* ignore */ }
     const parsed = parseResumeText(normalized);
     try {
       const dateMatches = collectDateMatches(normalized);
       const mapped = mapParsedResume(parsed);
-      // DEBUG: Write intermediate results
-      try {
-        const fs = require('fs');
-        fs.writeFileSync('/tmp/debug-sections.json', JSON.stringify(parsed.sections, null, 2), 'utf8');
-        fs.writeFileSync('/tmp/debug-mapped.json', JSON.stringify({
-          experience: mapped.experience,
-          education: mapped.education,
-          skills: mapped.skills?.length,
-          roleLevel: mapped.roleLevel,
-        }, null, 2), 'utf8');
-        console.log(`[parse-upload DEBUG] mapped: exp=${mapped.experience?.length}, edu=${mapped.education?.length}, skills=${mapped.skills?.length}, role=${mapped.roleLevel}`);
-      } catch (_e) { /* ignore */ }
       const sanitized = sanitizeImportedResume({
         title: options?.title?.trim() || mapped.title,
         contact: mapped.contact,
@@ -3220,9 +3201,12 @@ function templateCleanList(input: unknown) {
 }
 
 function templateFullNameOrTitle(resume: any) {
-  const title = String(resume?.title || '').trim();
   const fullName = String(resume?.contact?.fullName || '').trim();
-  return title || fullName || 'Resume';
+  const title = String(resume?.title || '').trim();
+  // Prefer fullName for the h1 heading so that pdf-parse can recover the
+  // person's name during ATS PDF round-trip (re-uploading an exported PDF).
+  // Fall back to title if fullName is not available.
+  return fullName || title || 'Resume';
 }
 
 function templateContactLine(resume: any) {

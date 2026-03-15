@@ -27,6 +27,7 @@
     "passport-jwt": "latest",
     "pdf-parse": "^2.4.5",
     "puppeteer": "latest",
+    "puppeteer-core": "^24.39.1",
     "reflect-metadata": "latest",
     "resume-builder-shared": "../resume-builder-shared",
     "resume-intelligence": "../packages/resume-intelligence",

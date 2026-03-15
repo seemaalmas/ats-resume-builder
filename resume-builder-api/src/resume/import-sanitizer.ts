@@ -106,16 +106,16 @@ function sanitizeContact(input: unknown, rejectedBlocks: string[]) {
   const location = cleanText(input.location);
   const links = cleanStringArray(input.links).filter((link) => link.length >= 3);
 
-  if (!fullName || fullName.length < 2) {
-    const fragments = [email, phone, location, ...links].filter(Boolean);
-    if (fragments.length) {
-      rejectedBlocks.push(`Contact from upload: ${fragments.join(' | ')}`);
-    }
+  // Even without a recognized fullName, preserve email/phone/location/links
+  // so that ATS round-trip PDFs (which may have a title in h1 instead of name)
+  // still retain contact info for the edit page.
+  const hasAnyContact = Boolean(fullName && fullName.length >= 2) || Boolean(email) || Boolean(phone) || Boolean(location) || links.length > 0;
+  if (!hasAnyContact) {
     return undefined;
   }
 
   return {
-    fullName,
+    fullName: fullName || '',
     email,
     phone,
     location,

@@ -348,4 +348,89 @@ Jul 2008 - Aug 2012
   // This is a known limitation of ATS PDF round-tripping (name is lost in h1).
 });
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Test 7: Contact info (email/phone) extracted even when name is not recognized
+// Regression: mapHeader() used to skip contact entirely if no name was found
+// ──────────────────────────────────────────────────────────────────────────────
+test('ATS PDF roundtrip: contact info extracted even without recognized name line', () => {
+  const atsText = `
+Tech Lead / AVP - Full Stack Engineering / Frontend Strategist
+cks011992@gmail.com | 9307003382 | Pune, MH 411057 | https://www.linkedin.com/in/chandankumar007
+
+SUMMARY
+10+ years of experience in the IT industry.
+
+EXPERIENCE
+AVP, Citi Corp
+Dec 2022 - Present
+Led cross-functional teams to deliver enterprise-grade applications
+`;
+
+  const mapped = mapResume(atsText);
+
+  // Contact should always be populated with email/phone even when the first line
+  // looks like a job title rather than a person name
+  assert.ok(mapped.contact, 'contact object must exist');
+  assert.equal(mapped.contact.email, 'cks011992@gmail.com', 'Email must be extracted');
+  assert.ok(mapped.contact.phone && mapped.contact.phone.includes('9307003382'), 'Phone must be extracted');
+  assert.ok(mapped.contact.location && mapped.contact.location.includes('Pune'), 'Location must be extracted');
+  assert.ok(mapped.contact.links && mapped.contact.links.length >= 1, 'LinkedIn link must be extracted');
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Test 8: Education institution abbreviations (SPPU, IIT, etc.) are recognized
+// Regression: looksLikeEducationInstitutionLine() only matched full words like
+// "university" but not common abbreviations
+// ──────────────────────────────────────────────────────────────────────────────
+test('ATS PDF roundtrip: education institution abbreviations are recognized', () => {
+  const atsText = `
+EDUCATION
+Master of Computer Applications
+SPPU
+Jan 2012 - Jan 2014
+
+Bachelor of Technology
+IIT Delhi
+2008 - 2012
+`;
+
+  const mapped = mapResume(atsText);
+
+  assert.ok(mapped.education.length >= 2, `Expected >= 2 education entries, got ${mapped.education.length}`);
+
+  const mca = mapped.education.find((e) => e.degree.toLowerCase().includes('master'));
+  assert.ok(mca, 'Missing MCA');
+  assert.ok(mca.institution.includes('SPPU'), `SPPU should be recognized as institution: "${mca.institution}"`);
+
+  const btech = mapped.education.find((e) => e.degree.toLowerCase().includes('bachelor'));
+  assert.ok(btech, 'Missing B.Tech');
+  assert.ok(btech.institution.toLowerCase().includes('iit'), `IIT Delhi should be recognized as institution: "${btech.institution}"`);
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Test 9: Short strings like "BB" are NOT falsely treated as institutions
+// Regression: expanded institution detection accidentally matched very short
+// title-case strings
+// ──────────────────────────────────────────────────────────────────────────────
+test('ATS PDF roundtrip: short strings like BB are not false-positive institutions', () => {
+  const atsText = `
+EDUCATION
+BB
+Indian Institute of Technology Delhi
+Jul 2008 - Aug 2012
+`;
+
+  const mapped = mapResume(atsText);
+
+  // The real institution is IIT Delhi, not "BB"
+  assert.ok(mapped.education.length >= 1, 'Should have at least 1 education entry');
+  const entry = mapped.education[0];
+  assert.ok(
+    entry.institution.toLowerCase().includes('technology') || entry.institution.toLowerCase().includes('delhi'),
+    `Institution should be IIT Delhi, not "${entry.institution}"`
+  );
+  // "BB" should NOT be the institution
+  assert.notEqual(entry.institution, 'BB', 'BB should not be treated as institution');
+});
+
 console.log('ATS PDF roundtrip tests registered — running via node:test');
